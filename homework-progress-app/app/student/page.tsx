@@ -214,6 +214,14 @@ export default function StudentHomePage() {
           <div className="text-sm text-gray-600 mt-1">先生に質問してスレッドでやりとり</div>
         </Link>
 
+        <Link
+          href="/student/materials"
+          className="block rounded-2xl border p-4 hover:bg-gray-100 hover:shadow-sm transition"
+        >
+          <div className="font-semibold">教材置き場</div>
+          <div className="text-sm text-gray-600 mt-1">授業で使う図・動画・補助教材を自由に閲覧</div>
+        </Link>
+
         <div className="space-y-1">
           <div className="text-lg font-semibold text-gray-700">小テスト（準備中）</div>
           <div className="rounded-2xl bg-gray-50 p-4 opacity-60">

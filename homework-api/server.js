@@ -21,6 +21,41 @@ try {
 }
 app.use("/uploads", express.static(uploadsRoot));
 
+const materialUploadsDir = path.join(uploadsRoot, "materials");
+const materialImageDir = path.join(materialUploadsDir, "images");
+const materialVideoDir = path.join(materialUploadsDir, "videos");
+const materialThumbDir = path.join(materialUploadsDir, "thumbs");
+const materialAppDir = path.join(materialUploadsDir, "apps");
+for (const dir of [materialUploadsDir, materialImageDir, materialVideoDir, materialThumbDir, materialAppDir]) {
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_e) {}
+}
+
+const makeDiskUpload = (destinationDir, fileSize, allowFile) =>
+  multer({
+    storage: multer.diskStorage({
+      destination: function (_req, _file, cb) { cb(null, destinationDir); },
+      filename: function (_req, file, cb) {
+        const safeBase = path.basename(file.originalname || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+        const ext = path.extname(safeBase).slice(0, 20);
+        const stem = path.basename(safeBase, ext).slice(0, 60) || "file";
+        cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}_${stem}${ext}`);
+      },
+    }),
+    limits: { fileSize },
+    fileFilter: function (req, file, cb) {
+      try { if (!allowFile(file)) return cb(new Error("invalid_file_type")); cb(null, true); } catch (e) { cb(e); }
+    },
+  });
+
+const materialImageUpload = makeDiskUpload(materialImageDir, 10 * 1024 * 1024, (file) => String(file.mimetype || "").startsWith("image/"));
+const materialThumbUpload = makeDiskUpload(materialThumbDir, 10 * 1024 * 1024, (file) => String(file.mimetype || "").startsWith("image/"));
+const materialVideoUpload = makeDiskUpload(materialVideoDir, 250 * 1024 * 1024, (file) => /^video\/(mp4|webm|ogg)/.test(String(file.mimetype || "")));
+const materialAppUpload = makeDiskUpload(materialAppDir, 20 * 1024 * 1024, (file) => {
+  const mime = String(file.mimetype || "").toLowerCase();
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  return mime === "text/html" || ext === ".html" || ext === ".htm";
+});
+
 const questionUpload = multer({
   storage: multer.diskStorage({
     destination: function (req, file, cb) {
@@ -54,6 +89,14 @@ const pool = new Pool({
 // DB: lightweight migrations (runtime safety)
 // =========================
 let __bookClassesReady = false;
+let __materialsReady = false;
+async function ensureMaterialsTables() {
+  if (__materialsReady) return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS materials (id text PRIMARY KEY, title text NOT NULL, description text, subject text NOT NULL DEFAULT 'other', unit_name text, grade_level text, material_type text NOT NULL, content_url text, thumbnail_url text, interactive_kind text, interactive_config jsonb, is_published boolean NOT NULL DEFAULT false, created_by text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS material_class_targets (material_id text NOT NULL REFERENCES materials(id) ON DELETE CASCADE, class_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (material_id, class_id))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS material_targets_class_idx ON material_class_targets(class_id)`);
+  __materialsReady = true;
+}
 async function ensureBookClassesTable() {
   if (__bookClassesReady) return;
   // 既存環境でも壊れないように IF NOT EXISTS
@@ -118,6 +161,14 @@ function normalizeSubject(x) {
   if (!s) return "other";
   return isValidSubject(s) ? s : "other";
 }
+
+function isValidMaterialType(x) { return x === "image" || x === "video" || x === "interactive" || x === "app"; }
+function isValidInteractiveKind(x) { return x === null || x === undefined || x === "" || x === "linear" || x === "parabola" || x === "bars"; }
+function normalizeMaterialClassIds(input) { if (!Array.isArray(input)) return []; return Array.from(new Set(input.map((x) => String(x ?? "").trim()).filter(Boolean))).sort(); }
+async function readMaterialById(client, id) { const r = await client.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.id = $1 GROUP BY m.id`, [id]); return r.rows[0] ?? null; }
+async function listTeacherMaterials() { await ensureMaterialsTables(); const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`); return r.rows; }
+async function listStudentMaterials(classId) { await ensureMaterialsTables(); const params = []; let visibility = "NOT EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id)"; if (classId) { params.push(classId); visibility = `${visibility} OR EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id AND t2.class_id = $1)`; } const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.is_published = true AND (${visibility}) GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`, params); return r.rows; }
+function materialUploadHandler(upload, routePath, urlPrefix) { app.post(routePath, requireAuth, requireRole("teacher"), (req, res) => { upload.single("file")(req, res, (err) => { if (err) { const msg = String(err?.message || err || "upload_error"); const status = msg.includes("invalid_file_type") ? 400 : 500; return res.status(status).json({ error: msg }); } if (!req.file) return res.status(400).json({ error: "missing_file" }); return res.json({ ok: true, url: `${urlPrefix}/${req.file.filename}`, filename: req.file.filename, mimetype: req.file.mimetype, size: req.file.size }); }); }); }
 
 function signToken(user) {
   return jwt.sign(
@@ -3691,6 +3742,25 @@ app.get("/teacher/notifications", requireAuth, requireRole("teacher"), async (re
     res.status(500).json({ error: "server_error" });
   }
 });
+
+
+
+/**
+ * =========================
+ * Materials
+ * =========================
+ */
+materialUploadHandler(materialImageUpload, "/teacher/materials/upload/image", "/uploads/materials/images");
+materialUploadHandler(materialVideoUpload, "/teacher/materials/upload/video", "/uploads/materials/videos");
+materialUploadHandler(materialThumbUpload, "/teacher/materials/upload/thumb", "/uploads/materials/thumbs");
+materialUploadHandler(materialAppUpload, "/teacher/materials/upload/app", "/uploads/materials/apps");
+app.get("/teacher/materials", requireAuth, requireRole("teacher"), async (_req, res) => { try { res.json(await listTeacherMaterials()); } catch (e) { console.error("[GET /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } });
+app.get("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { try { await ensureMaterialsTables(); const row = await readMaterialById(pool, String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
+app.post("/teacher/materials", requireAuth, requireRole("teacher"), async (req, res) => { const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const id = newId("mat"); await client.query(`INSERT INTO materials (id, title, description, subject, unit_name, grade_level, material_type, content_url, thumbnail_url, interactive_kind, interactive_config, is_published, created_by, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished, req.user.uid]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[POST /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
+app.put("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { const id = String(req.params.id); const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const exists = await client.query(`SELECT id FROM materials WHERE id=$1`, [id]); if (exists.rows.length === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); } await client.query(`UPDATE materials SET title=$2, description=$3, subject=$4, unit_name=$5, grade_level=$6, material_type=$7, content_url=$8, thumbnail_url=$9, interactive_kind=$10, interactive_config=$11, is_published=$12, updated_at=now() WHERE id=$1`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished]); await client.query(`DELETE FROM material_class_targets WHERE material_id=$1`, [id]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[PUT /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
+app.delete("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { try { await ensureMaterialsTables(); const d = await pool.query(`DELETE FROM materials WHERE id=$1 RETURNING id`, [String(req.params.id)]); if (d.rows.length === 0) return res.status(404).json({ error: "not_found" }); res.json({ ok: true, id: d.rows[0].id }); } catch (e) { console.error("[DELETE /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
+app.get("/student/materials", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; res.json(await listStudentMaterials(classId)); } catch (e) { console.error("[GET /student/materials]", e); res.status(500).json({ error: "server_error" }); } });
+app.get("/student/materials/:id", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; const rows = await listStudentMaterials(classId); const row = rows.find((x) => x.id === String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /student/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
 
 app.listen(port, () => console.log(`API running on http://localhost:${port}`));
 

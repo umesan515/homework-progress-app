@@ -107,6 +107,7 @@ export default function AppHeader() {
           { href: "/teacher/assignments", label: "進捗確認（配布済み課題）" },
           { href: "/teacher/classes", label: "クラス別進捗" },
           { href: "/teacher/questions", label: "質問（Q&A）" },
+          { href: "/teacher/materials", label: "教材置き場" },
           { href: "/teacher/books", label: "問題集管理" },
         ]
       : role === "student"
@@ -114,6 +115,7 @@ export default function AppHeader() {
             { href: "/student", label: "生徒ホーム" },
             { href: "/student/assignments", label: "課題一覧" },
             { href: "/student/questions", label: "質問" },
+            { href: "/student/materials", label: "教材置き場" },
           ]
         : [{ href: "/", label: "ホーム" }];
 
