@@ -206,12 +206,13 @@ export default function StudentHomePage() {
           <div className="text-sm text-gray-600 mt-1">届いた課題をまとめて確認</div>
         </Link>
 
-        <div className="space-y-1">
-          <div className="text-lg font-semibold text-gray-700">質問（準備中）</div>
-          <div className="rounded-2xl bg-gray-50 p-4 opacity-60">
-            <div className="text-sm text-gray-600">匿名質問・画像送信</div>
-          </div>
-        </div>
+        <Link
+          href="/student/questions"
+          className="block rounded-2xl border p-4 hover:bg-gray-100 hover:shadow-sm transition"
+        >
+          <div className="font-semibold">質問（Q&A）</div>
+          <div className="text-sm text-gray-600 mt-1">先生に質問してスレッドでやりとり</div>
+        </Link>
 
         <div className="space-y-1">
           <div className="text-lg font-semibold text-gray-700">小テスト（準備中）</div>

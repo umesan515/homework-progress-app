@@ -282,6 +282,11 @@ export default function TeacherHomePage() {
           <div className="font-semibold">問題集管理（問題一覧）</div>
           <div className="text-sm text-gray-600">問題集→章→大問の登録・過去出題の把握</div>
         </Link>
+
+        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/questions">
+          <div className="font-semibold">質問（Q&A）</div>
+          <div className="text-sm text-gray-600">生徒からの質問確認・返信・解決管理</div>
+        </Link>
       </div>
 
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">

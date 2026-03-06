@@ -6,7 +6,14 @@ import { useParams, useRouter } from "next/navigation";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
 
-type ClassListResp = { classIds: string[] };
+type ClassItem = { id: string; name?: string | null };
+
+type ClassListResp =
+  | { classIds: string[] }
+  | { classes: string[] }
+  | { classes: ClassItem[] }
+  | string[]
+  | ClassItem[];
 
 type ChapterRow = {
   id: string;
@@ -66,7 +73,7 @@ export default function TeacherBookDetailPage() {
   const [err, setErr] = useState<string | null>(null);
 
   // class assignment
-  const [allClasses, setAllClasses] = useState<string[]>([]);
+  const [allClasses, setAllClasses] = useState<ClassItem[]>([]);
   const [assignedClasses, setAssignedClasses] = useState<string[]>([]);
   const [busyClasses, setBusyClasses] = useState(false);
 
@@ -141,9 +148,21 @@ export default function TeacherBookDetailPage() {
 
       // class list (best-effort)
       try {
-        const cls = (await apiGet(`/teacher/classes`)) as ClassListResp | string[] | { classes: string[] };
-        const list = Array.isArray(cls) ? cls : ((cls as any).classIds ?? (cls as any).classes ?? []);
-        setAllClasses(Array.isArray(list) ? list : []);
+        const cls = (await apiGet(`/teacher/classes`)) as ClassListResp;
+        const raw = Array.isArray(cls) ? cls : ((cls as any).classIds ?? (cls as any).classes ?? []);
+
+        const items: ClassItem[] = (Array.isArray(raw) ? raw : []).flatMap((x: any) => {
+          if (!x) return [];
+          if (typeof x === "string") return [{ id: x }];
+          const id = x.id ?? x.class_id ?? x.classId ?? x.cid;
+          if (!id || typeof id !== "string") return [];
+          return [{ id, name: x.name ?? x.label ?? x.title ?? null }];
+        });
+
+        // 重複除去（idで一意化）
+        const uniq = new Map<string, ClassItem>();
+        for (const it of items) if (!uniq.has(it.id)) uniq.set(it.id, it);
+        setAllClasses(Array.from(uniq.values()));
       } catch {
         setAllClasses([]);
       }
@@ -265,7 +284,8 @@ export default function TeacherBookDetailPage() {
             <>
               <div className="text-xs text-gray-500 mb-2">チェックしたクラスでこの問題集を使用します。</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {allClasses.map((cid) => {
+                {allClasses.map((c) => {
+                  const cid = c.id;
                   const checked = assignedClasses.includes(cid);
                   return (
                     <label
@@ -278,7 +298,7 @@ export default function TeacherBookDetailPage() {
                         disabled={busyClasses}
                         onChange={() => toggleClass(cid)}
                       />
-                      <span className="text-sm text-gray-700">{cid}</span>
+                      <span className="text-sm text-gray-700">{c.name ?? cid}</span>
                     </label>
                   );
                 })}

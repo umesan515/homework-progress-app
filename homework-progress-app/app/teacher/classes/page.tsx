@@ -91,6 +91,8 @@ function pctColor(pct: number) {
 
 type SortKey = "reviewPct" | "none" | "batsuPct" | "maruPctAsc";
 
+type BookRow = { id: string; name: string; created_at: string; collection_id?: string | null; subject?: string | null };
+
 export default function TeacherClassesDashboardPage() {
   const router = useRouter();
 
@@ -103,7 +105,7 @@ export default function TeacherClassesDashboardPage() {
   const [classIds, setClassIds] = useState<string[]>([]);
   const [selectedClass, setSelectedClass] = useState<string>(ALL_CLASS_VALUE);
 
-  const [tab, setTab] = useState<"summary" | "heatmap" | "problems">("summary");
+  const [tab, setTab] = useState<"summary" | "heatmap" | "problems" | "books">("summary");
 
   // summary
   const [busySummary, setBusySummary] = useState(false);
@@ -128,6 +130,10 @@ export default function TeacherClassesDashboardPage() {
   const [minReviewPct, setMinReviewPct] = useState<number>(25);
   const [hideEasy, setHideEasy] = useState<boolean>(true); // reviewPctや未着手が小さいものを隠す
   const [onlyNeedsFollow, setOnlyNeedsFollow] = useState<boolean>(false); // しきい値以上だけ
+
+  // books
+  const [busyBooks, setBusyBooks] = useState(false);
+  const [classBooks, setClassBooks] = useState<BookRow[]>([]);
 
   useEffect(() => {
     setMounted(true);
@@ -221,6 +227,34 @@ export default function TeacherClassesDashboardPage() {
       else setErr(msg);
     } finally {
       setBusyHeat(false);
+    }
+  };
+
+  const loadBooks = async () => {
+    if (!canLoad) return;
+
+    setBusyBooks(true);
+    setErr(null);
+    setClassBooks([]);
+
+    try {
+      if (selectedClass === ALL_CLASS_VALUE) {
+        setErr("『使用問題集』はクラスを選択して表示してください。");
+        return;
+      }
+
+      const r = await apiGet<BookRow[]>(`/teacher/books?classId=${encodeURIComponent(selectedClass)}`);
+      setClassBooks(Array.isArray(r) ? r : []);
+    } catch (e: unknown) {
+      const msg = String((e as { message?: unknown })?.message ?? "読み込みに失敗しました。");
+      if (msg.includes("401")) {
+        logout();
+        router.replace("/login");
+        return;
+      }
+      setErr(msg);
+    } finally {
+      setBusyBooks(false);
     }
   };
 
@@ -408,6 +442,13 @@ export default function TeacherClassesDashboardPage() {
           >
             問題別
           </button>
+
+          <button
+            className={`rounded-lg border px-3 py-2 text-sm ${tab === "books" ? "bg-gray-100" : "hover:bg-gray-50"}`}
+            onClick={() => setTab("books")}
+          >
+            使用問題集
+          </button>
         </div>
 
         <button
@@ -419,10 +460,11 @@ export default function TeacherClassesDashboardPage() {
               if (!selectedAssignmentId) loadProbAssignmentList();
               else loadProblemStats(selectedAssignmentId);
             }
+            if (tab === "books") loadBooks();
           }}
-          disabled={busySummary || busyHeat || busyProb}
+          disabled={busySummary || busyHeat || busyProb || busyBooks}
         >
-          {busySummary || busyHeat || busyProb ? "更新中..." : "更新"}
+          {busySummary || busyHeat || busyProb || busyBooks ? "更新中..." : "更新"}
         </button>
 
         <div className="text-xs text-gray-500">
@@ -488,6 +530,63 @@ export default function TeacherClassesDashboardPage() {
 
           <div className="text-xs text-gray-500">
             ※ 平均進捗は「対象生徒の (完了数/問題数) の平均」です。未着手も平均に含みます。
+          </div>
+        </div>
+      )}
+
+      {/* ----------------- BOOKS ----------------- */}
+      {tab === "books" && (
+        <div className="space-y-2">
+          <div className="text-sm text-gray-700">※ このクラスで「使用中」として登録されている問題集一覧です（問題集詳細のチェックで管理）。</div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              className="rounded-lg border px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
+              disabled={busyBooks}
+              onClick={loadBooks}
+            >
+              {busyBooks ? "読み込み中..." : "読み込む"}
+            </button>
+
+            {selectedClass === ALL_CLASS_VALUE && <div className="text-sm text-gray-600">クラスを選択してください。</div>}
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border">
+            <table className="min-w-[720px] w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left p-3">問題集</th>
+                  <th className="text-left p-3 w-40">作成日</th>
+                  <th className="text-left p-3 w-40">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {classBooks.map((b) => (
+                  <tr key={b.id} className="border-t">
+                    <td className="p-3">
+                      <div className="font-semibold">{b.name}</div>
+                      <div className="text-xs text-gray-500">ID: {b.id}</div>
+                    </td>
+                    <td className="p-3 text-gray-700">{new Date(b.created_at).toLocaleDateString("ja-JP")}</td>
+                    <td className="p-3">
+                      <Link className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50" href={`/teacher/books/${b.id}`}>
+                        詳細
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+
+                {!busyBooks && classBooks.length === 0 && (
+                  <tr className="border-t">
+                    <td className="p-3 text-gray-600" colSpan={3}>
+                      {selectedClass === ALL_CLASS_VALUE
+                        ? "クラスを選択してください。"
+                        : "このクラスで使用中の問題集がありません。問題集詳細から『使用クラス』を登録してください。"}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

@@ -66,6 +66,7 @@ export default function StudentAssignmentPage() {
   const [user, setUser] = useState<JwtUser | null>(null);
 
   const [a, setA] = useState<AssignmentRow | null>(null);
+  const [problems, setProblems] = useState<ProblemRow[]>([]);
   const [labels, setLabels] = useState<string[]>([]);
   const [sub, setSub] = useState<SubmissionPayload | null>(null);
 
@@ -101,7 +102,9 @@ export default function StudentAssignmentPage() {
 
     const detail = await apiGet<AssignmentDetail>(`/assignments/${encodeURIComponent(assignmentId)}`);
     setA(detail.assignment);
-    setLabels((detail.problems ?? []).map((p) => p.label));
+    const ps = Array.isArray(detail.problems) ? detail.problems : [];
+    setProblems(ps);
+    setLabels(ps.map((p) => p.label));
 
     const s = await apiGet<SubmissionPayload>(`/submissions?assignmentId=${encodeURIComponent(assignmentId)}`);
     setSub(s);
@@ -255,7 +258,10 @@ export default function StudentAssignmentPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {labels.map((label) => {
+                  {(problems.length ? problems : labels.map((label) => ({ label, block_id: null, sort_order: 0 } as any))).map((p) => {
+                    const label = p.label;
+                    const blockId = p.block_id;
+
                     const saving = savingKey === label;
                     // 学習時刻（初回）はAPIのキー名が snake_case / camelCase どちらの場合もあるためフォールバックする
                     const anySub: any = sub as any;
@@ -373,6 +379,12 @@ export default function StudentAssignmentPage() {
           </span>
         ) : null}
         <span className="inline-block font-mono text-xs rounded-md border bg-gray-50 px-2 py-1">{s.num}</span>
+        <Link
+          className=\"rounded-lg border px-2 py-1 bg-white shadow-sm hover:bg-gray-100 hover:shadow transition active:scale-[0.99] text-[11px] ml-auto\"
+          href={\`/student/questions?blockId=${encodeURIComponent(blockId ?? \"\")}\&title=${encodeURIComponent(\`【課題】${label}\`)}\`}
+        >
+          質問
+        </Link>
       </div>
     );
   })()}

@@ -1,4 +1,7 @@
 const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 const cors = require("cors");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
@@ -6,6 +9,32 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 
 const app = express();
+
+
+// --- uploads (question images) ---
+const uploadsRoot = path.join(__dirname, "uploads");
+const questionUploadsDir = path.join(uploadsRoot, "questions");
+try {
+  fs.mkdirSync(questionUploadsDir, { recursive: true });
+} catch (e) {
+  // ignore
+}
+app.use("/uploads", express.static(uploadsRoot));
+
+const questionUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, questionUploadsDir);
+    },
+    filename: function (req, file, cb) {
+      const ext = path.extname(file.originalname || "").slice(0, 16);
+      cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+  },
+});
 app.use(express.json());
 app.use(cors());
 
@@ -20,6 +49,25 @@ const pool = new Pool({
   password: process.env.PG_PASSWORD || "",
   database: "homework_app",
 });
+
+// =========================
+// DB: lightweight migrations (runtime safety)
+// =========================
+let __bookClassesReady = false;
+async function ensureBookClassesTable() {
+  if (__bookClassesReady) return;
+  // 既存環境でも壊れないように IF NOT EXISTS
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS book_classes (
+      book_id    text NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      class_id   text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (book_id, class_id)
+    )`
+  );
+  await pool.query(`CREATE INDEX IF NOT EXISTS book_classes_class_idx ON book_classes(class_id)`);
+  __bookClassesReady = true;
+}
 
 const nowIso = () => new Date().toISOString();
 
@@ -1990,11 +2038,29 @@ app.delete(
   }
 );
 
-app.get("/teacher/books", requireAuth, requireRole("teacher"), async (_req, res) => {
+app.get("/teacher/books", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
+    const classId = String(req.query?.classId ?? "").trim();
+
     // subject列追加(migration)が未適用でも落ちないように、まず新スキーマで試して、
     // 42703(undefined_column) の場合は旧スキーマにフォールバックする。
     try {
+      if (classId) {
+        const r = await pool.query(
+          `SELECT b.id, b.name, b.created_at, b.collection_id,
+                  b.subject,
+                  c.name AS collection_name,
+                  c.subject AS collection_subject
+           FROM books b
+           JOIN book_classes bc ON bc.book_id = b.id
+           LEFT JOIN collections c ON c.id = b.collection_id
+           WHERE bc.class_id = $1
+           ORDER BY COALESCE(c.name, 'その他') ASC, b.name ASC`,
+          [classId]
+        );
+        return res.json(r.rows);
+      }
+
       const r = await pool.query(
         `SELECT b.id, b.name, b.created_at, b.collection_id,
                 b.subject,
@@ -2009,11 +2075,20 @@ app.get("/teacher/books", requireAuth, requireRole("teacher"), async (_req, res)
       if (String(e1?.code ?? "") !== "42703") throw e1;
 
       const r2 = await pool.query(
-        `SELECT b.id, b.name, b.created_at, b.collection_id,
-                c.name AS collection_name
-         FROM books b
-         LEFT JOIN collections c ON c.id = b.collection_id
-         ORDER BY COALESCE(c.name, 'その他') ASC, b.name ASC`
+        classId
+          ? `SELECT b.id, b.name, b.created_at, b.collection_id,
+                    c.name AS collection_name
+             FROM books b
+             JOIN book_classes bc ON bc.book_id = b.id
+             LEFT JOIN collections c ON c.id = b.collection_id
+             WHERE bc.class_id = $1
+             ORDER BY COALESCE(c.name, 'その他') ASC, b.name ASC`
+          : `SELECT b.id, b.name, b.created_at, b.collection_id,
+                    c.name AS collection_name
+             FROM books b
+             LEFT JOIN collections c ON c.id = b.collection_id
+             ORDER BY COALESCE(c.name, 'その他') ASC, b.name ASC`,
+        classId ? [classId] : []
       );
 
       // フロント互換のため、subject系フィールドを補完して返す
@@ -2107,6 +2182,226 @@ app.get("/teacher/books/:bookId", requireAuth, requireRole("teacher"), async (re
   } catch (e) {
     console.error("[GET /teacher/books/:bookId]", e);
     res.status(500).json({ error: "server_error" });
+  }
+});
+
+// =========================
+// Teacher: Book ↔ Class usage
+// =========================
+app.get(
+  "/teacher/books/:bookId/classes",
+  requireAuth,
+  requireRole("teacher"),
+  async (req, res) => {
+    try {
+      await ensureBookClassesTable();
+      const bookId = String(req.params.bookId);
+
+      const b = await pool.query(`SELECT id FROM books WHERE id=$1`, [bookId]);
+      if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+      const r = await pool.query(
+        `SELECT class_id
+         FROM book_classes
+         WHERE book_id=$1
+         ORDER BY class_id`,
+        [bookId]
+      );
+      return res.json({ classIds: r.rows.map((x) => x.class_id) });
+    } catch (e) {
+      console.error("[GET /teacher/books/:bookId/classes]", e);
+      return res.status(500).json({ error: "server_error" });
+    }
+  }
+);
+
+app.put(
+  "/teacher/books/:bookId/classes",
+  requireAuth,
+  requireRole("teacher"),
+  async (req, res) => {
+    const bookId = String(req.params.bookId);
+    try {
+      await ensureBookClassesTable();
+
+      const b = await pool.query(`SELECT id FROM books WHERE id=$1`, [bookId]);
+      if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+      const raw = req.body?.classIds ?? req.body?.classes ?? req.body?.class_ids;
+      const ids = Array.isArray(raw) ? raw : [];
+      const classIds = Array.from(
+        new Set(
+          ids
+            .map((x) => (x == null ? "" : String(x).trim()))
+            .filter((x) => x.length > 0)
+        )
+      ).sort();
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`DELETE FROM book_classes WHERE book_id=$1`, [bookId]);
+        for (const cid of classIds) {
+          await client.query(
+            `INSERT INTO book_classes (book_id, class_id)
+             VALUES ($1,$2)
+             ON CONFLICT DO NOTHING`,
+            [bookId, cid]
+          );
+        }
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK");
+        throw e;
+      } finally {
+        client.release();
+      }
+
+      return res.json({ ok: true, bookId, classIds });
+    } catch (e) {
+      console.error("[PUT /teacher/books/:bookId/classes]", e);
+      return res.status(500).json({ error: "server_error" });
+    }
+  }
+);
+
+app.get(
+  "/teacher/classes/:classId/books",
+  requireAuth,
+  requireRole("teacher"),
+  async (req, res) => {
+    try {
+      await ensureBookClassesTable();
+      const classId = String(req.params.classId);
+      const r = await pool.query(
+        `SELECT b.id, b.name, b.collection_id, b.subject, b.created_at
+         FROM book_classes bc
+         JOIN books b ON b.id = bc.book_id
+         WHERE bc.class_id=$1
+         ORDER BY b.name ASC`,
+        [classId]
+      );
+      return res.json({ classId, books: r.rows });
+    } catch (e) {
+      console.error("[GET /teacher/classes/:classId/books]", e);
+      return res.status(500).json({ error: "server_error" });
+    }
+  }
+);
+
+app.get(
+  "/teacher/classes/:classId/books/summary",
+  requireAuth,
+  requireRole("teacher"),
+  async (req, res) => {
+    try {
+      await ensureBookClassesTable();
+      const classId = String(req.params.classId);
+
+      // subject列が無い旧スキーマ環境もあるため、まず新スキーマで試して 42703 ならフォールバック
+      try {
+        const r = await pool.query(
+          `SELECT
+             b.id,
+             b.name,
+             b.created_at,
+             b.collection_id,
+             b.subject,
+             c.name AS collection_name,
+             c.subject AS collection_subject,
+             COUNT(DISTINCT ch.id) AS chapter_count,
+             COUNT(bl.id) AS block_count,
+             SUM(CASE WHEN bl.series='problem' THEN 1 ELSE 0 END) AS problem_count,
+             SUM(CASE WHEN bl.series='exercise' THEN 1 ELSE 0 END) AS exercise_count,
+             SUM(CASE WHEN bl.series='comprehensive' THEN 1 ELSE 0 END) AS comprehensive_count,
+             MAX(bl.created_at) AS last_block_at,
+             MAX(ch.created_at) AS last_chapter_at
+           FROM book_classes bc
+           JOIN books b ON b.id = bc.book_id
+           LEFT JOIN collections c ON c.id = b.collection_id
+           LEFT JOIN chapters ch ON ch.book_id = b.id
+           LEFT JOIN blocks bl ON bl.chapter_id = ch.id
+           WHERE bc.class_id=$1
+           GROUP BY b.id, c.name, c.subject
+           ORDER BY COALESCE(c.name,'その他') ASC, b.name ASC`,
+          [classId]
+        );
+        return res.json({ classId, books: r.rows });
+      } catch (e1) {
+        if (String(e1?.code ?? "") !== "42703") throw e1;
+
+        const r2 = await pool.query(
+          `SELECT
+             b.id,
+             b.name,
+             b.created_at,
+             b.collection_id,
+             c.name AS collection_name,
+             COUNT(DISTINCT ch.id) AS chapter_count,
+             COUNT(bl.id) AS block_count,
+             SUM(CASE WHEN bl.series='problem' THEN 1 ELSE 0 END) AS problem_count,
+             SUM(CASE WHEN bl.series='exercise' THEN 1 ELSE 0 END) AS exercise_count,
+             SUM(CASE WHEN bl.series='comprehensive' THEN 1 ELSE 0 END) AS comprehensive_count,
+             MAX(bl.created_at) AS last_block_at,
+             MAX(ch.created_at) AS last_chapter_at
+           FROM book_classes bc
+           JOIN books b ON b.id = bc.book_id
+           LEFT JOIN collections c ON c.id = b.collection_id
+           LEFT JOIN chapters ch ON ch.book_id = b.id
+           LEFT JOIN blocks bl ON bl.chapter_id = ch.id
+           WHERE bc.class_id=$1
+           GROUP BY b.id, c.name
+           ORDER BY COALESCE(c.name,'その他') ASC, b.name ASC`,
+          [classId]
+        );
+
+        return res.json({
+          classId,
+          books: r2.rows.map((row) => ({
+            ...row,
+            subject: null,
+            collection_subject: null,
+          })),
+        });
+      }
+    } catch (e) {
+      console.error("[GET /teacher/classes/:classId/books/summary]", e);
+      return res.status(500).json({ error: "server_error" });
+    }
+  }
+);
+
+
+
+app.get("/teacher/books/:bookId/chapters", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    const bookId = String(req.params.bookId);
+    const b = await pool.query(`SELECT id FROM books WHERE id=$1`, [bookId]);
+    if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+    const c = await pool.query(
+      `SELECT id, book_id, name, part, chapter_no, sort_order, created_at
+       FROM chapters
+       WHERE book_id=$1
+       ORDER BY
+         CASE upper(coalesce(part,'未設定'))
+           WHEN 'I' THEN 10
+           WHEN 'A' THEN 20
+           WHEN 'II' THEN 30
+           WHEN 'B' THEN 40
+           WHEN '未設定' THEN 999
+           ELSE 500
+         END,
+         COALESCE(chapter_no, 9999),
+         COALESCE(sort_order, 9999),
+         name`,
+      [bookId]
+    );
+
+    return res.json({ chapters: c.rows });
+  } catch (e) {
+    console.error("[GET /teacher/books/:bookId/chapters]", e);
+    return res.status(500).json({ error: "server_error" });
   }
 });
 
@@ -2256,19 +2551,34 @@ app.post(
 app.post("/teacher/blocks/bulk-update", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
-    const series = String(req.body?.series ?? "");
-    const zone = String(req.body?.zone ?? "").trim() || "未設定";
-    if (ids.length === 0) return res.status(400).json({ error: "missing_ids" });
-    if (!isValidSeries(series)) return res.status(400).json({ error: "invalid_series" });
+    const series = req.body?.series !== undefined ? String(req.body.series) : null;
+    const zone = req.body?.zone !== undefined ? String(req.body.zone).trim() : null;
+    const scope = req.body?.scope !== undefined ? String(req.body.scope).trim() : null;
 
+    if (ids.length === 0) return res.status(400).json({ error: "missing_ids" });
+    if (series !== null && !isValidSeries(series)) return res.status(400).json({ error: "invalid_series" });
+
+    // 何も変更項目が無い場合はエラー
+    if (series === null && zone === null && scope === null) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    // 変更後の値を決める（指定が無ければ現状維持）
     const r = await pool.query(
       `
-      UPDATE blocks
-      SET series=$2, zone=$3, scope=$4,
-          sort_order =
-            (CASE $2 WHEN 'problem' THEN 1000000 WHEN 'exercise' THEN 2000000 ELSE 3000000 END) + no
-      WHERE id = ANY($1::text[])
-      RETURNING id
+      UPDATE blocks b
+      SET
+        series = COALESCE($2, b.series),
+        zone = COALESCE($3, b.zone),
+        scope = COALESCE($4, b.scope),
+        sort_order =
+          (CASE COALESCE($2, b.series)
+            WHEN 'problem' THEN 1000000
+            WHEN 'exercise' THEN 2000000
+            ELSE 3000000
+          END) + b.no
+      WHERE b.id = ANY($1::text[])
+      RETURNING b.id
       `,
       [ids, series, zone, scope]
     );
@@ -2289,6 +2599,142 @@ app.delete("/teacher/blocks/:blockId", requireAuth, requireRole("teacher"), asyn
   } catch (e) {
     console.error("[DELETE /teacher/blocks/:blockId]", e);
     res.status(500).json({ error: "server_error" });
+  }
+});
+
+// ---- Blocks: single edit / move / renumber ----
+
+app.put("/teacher/blocks/:blockId", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    const blockId = String(req.params.blockId);
+
+    const series = req.body?.series !== undefined ? String(req.body.series) : null;
+    const zone = req.body?.zone !== undefined ? String(req.body.zone).trim() : null;
+    const scope = req.body?.scope !== undefined ? String(req.body.scope).trim() : null;
+    const no = req.body?.no !== undefined ? Number(req.body.no) : null;
+    const label = req.body?.label !== undefined ? String(req.body.label) : null;
+
+    if (series !== null && !isValidSeries(series)) return res.status(400).json({ error: "invalid_series" });
+    if (no !== null && (!Number.isFinite(no) || no <= 0)) return res.status(400).json({ error: "invalid_no" });
+
+    // 何も更新が無い
+    if (series === null && zone === null && scope === null && no === null && label === null) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    const r = await pool.query(
+      `
+      UPDATE blocks b
+      SET
+        series = COALESCE($2, b.series),
+        zone = COALESCE($3, b.zone),
+        scope = COALESCE($4, b.scope),
+        no = COALESCE($5, b.no),
+        label = COALESCE($6, b.label),
+        sort_order =
+          (CASE COALESCE($2, b.series)
+            WHEN 'problem' THEN 1000000
+            WHEN 'exercise' THEN 2000000
+            ELSE 3000000
+          END) + COALESCE($5, b.no)
+      WHERE b.id=$1
+      RETURNING b.id
+      `,
+      [blockId, series, zone, scope, no, label]
+    );
+
+    if (r.rows.length === 0) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) {
+    console.error("[PUT /teacher/blocks/:blockId]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.post("/teacher/blocks/move", requireAuth, requireRole("teacher"), async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+  const targetChapterId = String(req.body?.targetChapterId ?? "");
+  if (ids.length === 0) return res.status(400).json({ error: "missing_ids" });
+  if (!targetChapterId) return res.status(400).json({ error: "missing_target" });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 移動先章が存在するか
+    const ch = await client.query(`SELECT id FROM chapters WHERE id=$1`, [targetChapterId]);
+    if (ch.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "chapter_not_found" });
+    }
+
+    // 現状の series/no を維持しつつ、chapter_id を更新
+    const r = await client.query(
+      `UPDATE blocks
+       SET chapter_id=$2
+       WHERE id = ANY($1::text[])
+       RETURNING id`,
+      [ids, targetChapterId]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, moved: r.rows.map((x) => x.id) });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[POST /teacher/blocks/move]', e);
+    res.status(500).json({ error: 'server_error' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/teacher/chapters/:chapterId/blocks/renumber", requireAuth, requireRole("teacher"), async (req, res) => {
+  // 指定された (series, scope) のブロックを sort_order,no,label の整合を取り直す
+  const chapterId = String(req.params.chapterId);
+  const series = String(req.body?.series ?? '');
+  const scope = String(req.body?.scope ?? '').trim();
+  const startAtRaw = Number(req.body?.startAt ?? 1);
+  const startAt = Number.isFinite(startAtRaw) && startAtRaw > 0 ? Math.trunc(startAtRaw) : 1;
+
+  if (!isValidSeries(series)) return res.status(400).json({ error: 'invalid_series' });
+  if (!scope) return res.status(400).json({ error: 'missing_scope' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const r = await client.query(
+      `SELECT id
+       FROM blocks
+       WHERE chapter_id=$1 AND series=$2 AND COALESCE(scope,'')=$3
+       ORDER BY sort_order ASC, no ASC, created_at ASC`,
+      [chapterId, series, scope]
+    );
+
+    const ids = r.rows.map((x) => x.id);
+    const updated = [];
+    for (let i = 0; i < ids.length; i++) {
+      const no = startAt + i;
+      const sortOrderBase = series === 'problem' ? 1000000 : series === 'exercise' ? 2000000 : 3000000;
+      const sortOrder = sortOrderBase + no;
+      const id = ids[i];
+      await client.query(
+        `UPDATE blocks
+         SET no=$2, label=$3, sort_order=$4
+         WHERE id=$1`,
+        [id, no, String(no), sortOrder]
+      );
+      updated.push(id);
+    }
+
+    await client.query('COMMIT');
+    res.json({ ok: true, updated, count: updated.length });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[POST /teacher/chapters/:chapterId/blocks/renumber]', e);
+    res.status(500).json({ error: 'server_error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -2621,6 +3067,630 @@ app.post(
 );
 
 const port = process.env.PORT || 4000;
+
+/**
+ * =========================
+ * 質問（Q&A）: Thread + Messages
+ * =========================
+ * - student: 質問作成/閲覧/追記
+ * - teacher: 一覧/閲覧/返信/ステータス変更
+ *
+ * 方針:
+ * - 既存環境を壊さないため、テーブルは IF NOT EXISTS で自動作成
+ * - threadId が "undefined" のような異常値の時は 400 を返す（フロントの不具合検知を容易に）
+ */
+
+let __questionsTablesReady = false;
+let __qtCols = null; // Set<string> | null
+
+async function loadQuestionThreadColumns() {
+  try {
+    const r = await pool.query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='question_threads'`
+    );
+    __qtCols = new Set(r.rows.map((x) => String(x.column_name)));
+  } catch (e) {
+    console.error("[questions] load columns failed", e);
+    __qtCols = null;
+  }
+}
+
+function hasQtCol(name) {
+  return __qtCols ? __qtCols.has(String(name)) : true; // unknown => assume exists
+}
+
+function qtSelect(col, alias, fallbackLiteral /* string | null */ = null) {
+  const a = alias || col;
+  if (hasQtCol(col)) return `qt.${col} AS ${a}`;
+  if (fallbackLiteral !== null) return `${fallbackLiteral} AS ${a}`;
+  return `NULL AS ${a}`;
+}
+
+async function ensureQuestionsTables() {
+  if (__questionsTablesReady) return;
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS question_threads (
+      id           text PRIMARY KEY,
+      book_id      text,
+      chapter_id   text,
+      block_id     text,
+      student_uid  text NOT NULL,
+      class_id     text,
+      title        text NOT NULL,
+      status       text NOT NULL DEFAULT 'open',
+      created_at   timestamptz NOT NULL DEFAULT now(),
+      updated_at   timestamptz NOT NULL DEFAULT now()
+    )`
+  );
+
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS question_messages (
+      id           text PRIMARY KEY,
+      thread_id    text NOT NULL REFERENCES question_threads(id) ON DELETE CASCADE,
+      sender_role  text NOT NULL,
+      sender_uid   text,
+      body         text NOT NULL DEFAULT '',
+      image_path   text,
+      image_mime   text,
+      image_size   integer,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )`
+  );
+
+
+// Backfill/extend columns for existing environments
+await pool.query(`ALTER TABLE question_threads ADD COLUMN IF NOT EXISTS book_id text`);
+await pool.query(`ALTER TABLE question_threads ADD COLUMN IF NOT EXISTS chapter_id text`);
+await pool.query(`ALTER TABLE question_threads ADD COLUMN IF NOT EXISTS block_id text`);
+await pool.query(`ALTER TABLE question_threads ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+await pool.query(`ALTER TABLE question_threads ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open'`);
+await pool.query(`ALTER TABLE question_messages ADD COLUMN IF NOT EXISTS image_path text`);
+await pool.query(`ALTER TABLE question_messages ADD COLUMN IF NOT EXISTS image_mime text`);
+await pool.query(`ALTER TABLE question_messages ADD COLUMN IF NOT EXISTS image_size integer`);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS q_threads_student_idx ON question_threads(student_uid, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS q_threads_class_idx ON question_threads(class_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS q_threads_block_idx ON question_threads(block_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS q_msgs_thread_idx ON question_messages(thread_id, created_at ASC)`);
+  await loadQuestionThreadColumns();
+  __questionsTablesReady = true;
+}
+
+function isValidQuestionStatus(s) {
+  return s === "open" || s === "closed";
+}
+
+function isBadThreadId(id) {
+  const v = String(id ?? "").trim();
+  return !v || v === "undefined" || v === "null";
+}
+
+// --- student ---
+
+app.get("/student/questions", requireAuth, requireRole("student"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const uid = String(req.user.uid);
+    const status = req.query.status ? String(req.query.status) : null;
+
+    const conds = [`qt.student_uid=$1`];
+    const params = [uid];
+    let idx = 2;
+
+    if (status && isValidQuestionStatus(status) && hasQtCol("status")) {
+      conds.push(`qt.status=$${idx++}`);
+      params.push(status);
+    }
+
+    const where = `WHERE ${conds.join(" AND ")}`;
+
+    const select = [
+      "qt.id",
+      "qt.title",
+      hasQtCol("status") ? "qt.status" : "'open'::text AS status",
+      qtSelect("book_id"),
+      qtSelect("chapter_id"),
+      qtSelect("block_id"),
+      qtSelect("class_id"),
+      "qt.created_at",
+      hasQtCol("updated_at") ? "qt.updated_at" : "qt.created_at AS updated_at",
+      `(SELECT MAX(created_at) FROM question_messages qm WHERE qm.thread_id=qt.id) AS last_message_at`,
+    ].join(", ");
+
+    const sql = `
+      SELECT ${select}
+      FROM question_threads qt
+      ${where}
+      ORDER BY COALESCE((SELECT MAX(created_at) FROM question_messages qm WHERE qm.thread_id=qt.id), qt.created_at) DESC
+    `;
+
+    const r = await pool.query(sql, params);
+    return res.json({ threads: r.rows });
+  } catch (e) {
+    console.error("[GET /student/questions]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+app.post("/student/questions", requireAuth, requireRole("student"), questionUpload.single("image"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const uid = String(req.user.uid);
+    const classId = req.user.classId ? String(req.user.classId) : null;
+
+    const { title, body, bookId, chapterId, blockId } = req.body ?? {};
+const titleText = String(title ?? "").trim();
+const bodyText = String(body ?? "").trim();
+const hasImage = !!req.file;
+if (!titleText) return res.status(400).json({ error: "missing_title" });
+if (!bodyText && !hasImage) return res.status(400).json({ error: "missing_body" });
+
+    const threadId = newId("qth");
+    await pool.query(
+      `INSERT INTO question_threads (id, book_id, chapter_id, block_id, student_uid, class_id, title, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'open')`,
+      [threadId, bookId ?? null, chapterId ?? null, blockId ?? null, uid, classId, String(title)]
+    );
+
+    const msgId = newId("qmsg");
+    await pool.query(
+      `INSERT INTO question_messages (id, thread_id, sender_role, sender_uid, body, image_path, image_mime, image_size)
+       VALUES ($1,$2,'student',$3,$4,$5,$6,$7)`
+      ,
+      [msgId, threadId, uid, bodyText, req.file ? `/uploads/questions/${req.file.filename}` : null, req.file?.mimetype ?? null, req.file?.size ?? null]
+    );
+
+    await pool.query(`UPDATE question_threads SET updated_at=now() WHERE id=$1`, [threadId]);
+
+    return res.json({ ok: true, threadId, thread: { id: threadId } });
+  } catch (e) {
+    console.error("[POST /student/questions]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.get("/student/questions/:threadId", requireAuth, requireRole("student"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const uid = String(req.user.uid);
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const t = await pool.query(
+      `SELECT id, title, status, book_id, chapter_id, block_id, class_id, student_uid, created_at, updated_at
+       FROM question_threads
+       WHERE id=$1`,
+      [threadId]
+    );
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+    if (String(t.rows[0].student_uid) !== uid) return res.status(403).json({ error: "forbidden" });
+
+    const m = await pool.query(
+      `SELECT id, thread_id, sender_role, sender_uid, body, image_path, image_mime, image_size, created_at
+       FROM question_messages
+       WHERE thread_id=$1
+       ORDER BY created_at ASC`,
+      [threadId]
+    );
+
+    return res.json({ thread: t.rows[0], messages: m.rows });
+  } catch (e) {
+    console.error("[GET /student/questions/:threadId]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.post("/student/questions/:threadId/messages", requireAuth, requireRole("student"), questionUpload.single("image"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const uid = String(req.user.uid);
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const t = await pool.query(`SELECT student_uid, status FROM question_threads WHERE id=$1`, [threadId]);
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+    if (String(t.rows[0].student_uid) !== uid) return res.status(403).json({ error: "forbidden" });
+
+    const { body } = req.body ?? {};
+const bodyText = String(body ?? "").trim();
+const hasImage = !!req.file;
+if (!bodyText && !hasImage) return res.status(400).json({ error: "missing_body" });
+
+    const msgId = newId("qmsg");
+    await pool.query(
+      `INSERT INTO question_messages (id, thread_id, sender_role, sender_uid, body, image_path, image_mime, image_size)
+       VALUES ($1,$2,'student',$3,$4,$5,$6,$7)`
+      ,
+      [msgId, threadId, uid, bodyText, req.file ? `/uploads/questions/${req.file.filename}` : null, req.file?.mimetype ?? null, req.file?.size ?? null]
+    );
+    await pool.query(`UPDATE question_threads SET updated_at=now() WHERE id=$1`, [threadId]);
+    return res.json({ ok: true, id: msgId });
+  } catch (e) {
+    console.error("[POST /student/questions/:threadId/messages]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+
+app.put("/student/questions/:threadId/status", requireAuth, requireRole("student"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const uid = String(req.user.uid);
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const status = String(req.body?.status ?? "");
+    if (!isValidQuestionStatus(status)) return res.status(400).json({ error: "bad_status" });
+
+    const t = await pool.query(`SELECT student_uid FROM question_threads WHERE id=$1`, [threadId]);
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+    if (String(t.rows[0].student_uid) !== uid) return res.status(403).json({ error: "forbidden" });
+
+    const u = await pool.query(
+      `UPDATE question_threads SET status=$2, updated_at=now() WHERE id=$1 RETURNING id, status`,
+      [threadId, status]
+    );
+    return res.json({ ok: true, thread: u.rows[0] });
+  } catch (e) {
+    console.error("[PUT /student/questions/:threadId/status]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+// =========================
+// Notifications (Questions)
+// =========================
+app.get("/student/notifications", requireAuth, requireRole("student"), async (req, res) => {
+  try {
+    // since は ISO文字列想定。無ければ7日前。
+    const sinceRaw = String(req.query?.since ?? "").trim();
+    let since = null;
+    if (sinceRaw) {
+      const d = new Date(sinceRaw);
+      if (!Number.isNaN(d.getTime())) since = d.toISOString();
+    }
+    if (!since) {
+      const d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      since = d.toISOString();
+    }
+
+    const limit = Math.min(Math.max(parseInt(String(req.query?.limit ?? "20"), 10) || 20, 1), 50);
+
+    const q = await pool.query(
+      `
+      SELECT
+        m.thread_id,
+        t.title,
+        m.body,
+        m.image_path,
+        m.created_at
+      FROM question_messages m
+      JOIN question_threads t ON t.id = m.thread_id
+      WHERE t.student_uid = $1
+        AND m.sender_role = 'teacher'
+        AND m.created_at > $2
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+      `,
+      [req.user.uid, since]
+    );
+
+    res.json({ notifications: q.rows ?? [] });
+  } catch (e) {
+    console.error("[GET /student/notifications]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
+
+// --- teacher ---
+
+app.get("/teacher/questions", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const status = req.query.status ? String(req.query.status) : null;
+    const classId = req.query.classId ? String(req.query.classId) : null;
+    const bookId = req.query.bookId ? String(req.query.bookId) : null;
+    const blockId = req.query.blockId ? String(req.query.blockId) : null;
+    const studentUid = req.query.studentUid ? String(req.query.studentUid) : null;
+
+    const conds = [];
+    const params = [];
+    let idx = 1;
+
+    if (status && isValidQuestionStatus(status) && hasQtCol("status")) {
+      conds.push(`qt.status=$${idx++}`);
+      params.push(status);
+    }
+    if (classId && hasQtCol("class_id")) {
+      conds.push(`qt.class_id=$${idx++}`);
+      params.push(classId);
+    }
+    if (bookId && hasQtCol("book_id")) {
+      conds.push(`qt.book_id=$${idx++}`);
+      params.push(bookId);
+    }
+    if (blockId && hasQtCol("block_id")) {
+      conds.push(`qt.block_id=$${idx++}`);
+      params.push(blockId);
+    }
+    if (studentUid && hasQtCol("student_uid")) {
+      conds.push(`qt.student_uid=$${idx++}`);
+      params.push(studentUid);
+    }
+
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+
+    const select = [
+      "qt.id",
+      "qt.title",
+      hasQtCol("status") ? "qt.status" : "'open'::text AS status",
+      qtSelect("class_id"),
+      qtSelect("student_uid"),
+      qtSelect("book_id"),
+      qtSelect("chapter_id"),
+      qtSelect("block_id"),
+      "qt.created_at",
+      hasQtCol("updated_at") ? "qt.updated_at" : "qt.created_at AS updated_at",
+      `(SELECT MAX(created_at) FROM question_messages qm WHERE qm.thread_id=qt.id) AS last_message_at`,
+      `(SELECT body FROM question_messages qm WHERE qm.thread_id=qt.id ORDER BY created_at DESC LIMIT 1) AS last_message_body`,
+    ].join(", ");
+
+    const sql = `
+      SELECT ${select}
+      FROM question_threads qt
+      ${where}
+      ORDER BY COALESCE((SELECT MAX(created_at) FROM question_messages qm WHERE qm.thread_id=qt.id), qt.created_at) DESC
+    `;
+
+    const r = await pool.query(sql, params);
+    return res.json({ threads: r.rows });
+  } catch (e) {
+    console.error("[GET /teacher/questions]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// block 紐付け運用：章内の質問数を block_id ごとに返す
+// GET /teacher/questions/counts?chapterId=...&status=open|closed
+app.get("/teacher/questions/counts", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const chapterId = req.query.chapterId ? String(req.query.chapterId) : null;
+    const status = req.query.status ? String(req.query.status) : "open";
+
+    if (!chapterId) return res.status(400).json({ error: "missing_chapterId" });
+    if (!hasQtCol("chapter_id") || !hasQtCol("block_id")) return res.json({ counts: {} });
+
+    const conds = ["qt.chapter_id=$1", "qt.block_id IS NOT NULL", "qt.block_id<>''"];
+    const params = [chapterId];
+    let idx = 2;
+
+    if (status && isValidQuestionStatus(status) && hasQtCol("status")) {
+      conds.push(`qt.status=$${idx++}`);
+      params.push(status);
+    }
+
+    const sql = `
+      SELECT qt.block_id AS block_id, COUNT(*)::int AS cnt
+      FROM question_threads qt
+      WHERE ${conds.join(" AND ")}
+      GROUP BY qt.block_id
+    `;
+
+    const r = await pool.query(sql, params);
+    const counts = {};
+    for (const row of r.rows) {
+      const bid = String(row.block_id ?? "");
+      if (!bid) continue;
+      counts[bid] = Number(row.cnt ?? 0);
+    }
+    return res.json({ counts });
+  } catch (e) {
+    console.error("[GET /teacher/questions/counts]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+app.get("/teacher/questions/:threadId", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const t = await pool.query(
+      `SELECT id, title, status, book_id, chapter_id, block_id, class_id, student_uid, created_at, updated_at
+       FROM question_threads
+       WHERE id=$1`,
+      [threadId]
+    );
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+    const m = await pool.query(
+      `SELECT id, thread_id, sender_role, sender_uid, body, image_path, image_mime, image_size, created_at
+       FROM question_messages
+       WHERE thread_id=$1
+       ORDER BY created_at ASC`,
+      [threadId]
+    );
+
+    return res.json({ thread: t.rows[0], messages: m.rows });
+  } catch (e) {
+    console.error("[GET /teacher/questions/:threadId]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.post("/teacher/questions/:threadId/messages", requireAuth, requireRole("teacher"), questionUpload.single("image"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const t = await pool.query(`SELECT id FROM question_threads WHERE id=$1`, [threadId]);
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+    const { body } = req.body ?? {};
+    const bodyText = String(body ?? "").trim();
+    const hasImage = !!req.file;
+    if (!bodyText && !hasImage) return res.status(400).json({ error: "missing_body" });
+
+    const msgId = newId("qmsg");
+    const imagePath = req.file ? `/uploads/questions/${req.file.filename}` : null;
+
+    await pool.query(
+      `INSERT INTO question_messages (id, thread_id, sender_role, sender_uid, body, image_path, image_mime, image_size)
+       VALUES ($1,$2,'teacher',$3,$4,$5,$6,$7)`,
+      [msgId, threadId, String(req.user.uid), bodyText, imagePath, req.file?.mimetype ?? null, req.file?.size ?? null]
+    );
+
+    await pool.query(`UPDATE question_threads SET updated_at=now() WHERE id=$1`, [threadId]);
+    return res.json({ ok: true, id: msgId });
+  } catch (e) {
+    console.error("[POST /teacher/questions/:threadId/messages]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+// --- DEV: delete a message (teacher only) ---
+app.delete("/teacher/questions/:threadId/messages/:messageId", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const threadId = String(req.params.threadId);
+    const messageId = String(req.params.messageId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+    if (!messageId) return res.status(400).json({ error: "missing_message_id" });
+
+    const t = await pool.query(`SELECT id FROM question_threads WHERE id=$1`, [threadId]);
+    if (t.rows.length === 0) return res.status(404).json({ error: "not_found" });
+
+    // 開発用：teacherが削除できるのは teacher が送ったメッセージのみ（誤削除防止）
+    const d = await pool.query(
+      `DELETE FROM question_messages
+       WHERE id=$1 AND thread_id=$2 AND sender_role='teacher'
+       RETURNING id`,
+      [messageId, threadId]
+    );
+    if (d.rows.length === 0) return res.status(404).json({ error: "message_not_found" });
+
+    await pool.query(`UPDATE question_threads SET updated_at=now() WHERE id=$1`, [threadId]);
+    return res.json({ ok: true, id: d.rows[0].id });
+  } catch (e) {
+    console.error("[DELETE /teacher/questions/:threadId/messages/:messageId]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.put("/teacher/questions/:threadId/status", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    const status = String(req.body?.status ?? "");
+    if (!isValidQuestionStatus(status)) return res.status(400).json({ error: "bad_status" });
+
+    const u = await pool.query(`UPDATE question_threads SET status=$2, updated_at=now() WHERE id=$1 RETURNING id, status`, [threadId, status]);
+    if (u.rows.length === 0) return res.status(404).json({ error: "not_found" });
+    return res.json({ ok: true, thread: u.rows[0] });
+  } catch (e) {
+    console.error("[PUT /teacher/questions/:threadId/status]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+app.delete("/teacher/questions/:threadId", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    await ensureQuestionsTables();
+    const threadId = String(req.params.threadId);
+    if (isBadThreadId(threadId)) return res.status(400).json({ error: "bad_thread_id" });
+
+    // 開発段階のため：教師はスレッド（質問）を削除できる
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 存在確認
+      const t = await client.query(`SELECT id FROM question_threads WHERE id=$1`, [threadId]);
+      if (t.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
+      }
+
+      await client.query(`DELETE FROM question_messages WHERE thread_id=$1`, [threadId]);
+      await client.query(`DELETE FROM question_threads WHERE id=$1`, [threadId]);
+
+      await client.query("COMMIT");
+      return res.json({ ok: true });
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error("[DELETE /teacher/questions/:threadId]", e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+app.get("/teacher/notifications", requireAuth, requireRole("teacher"), async (req, res) => {
+  try {
+    const sinceRaw = String(req.query?.since ?? "").trim();
+    let since = null;
+    if (sinceRaw) {
+      const d = new Date(sinceRaw);
+      if (!Number.isNaN(d.getTime())) since = d.toISOString();
+    }
+    if (!since) {
+      const d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      since = d.toISOString();
+    }
+
+    const classId = String(req.query?.classId ?? "").trim();
+    const limit = Math.min(Math.max(parseInt(String(req.query?.limit ?? "20"), 10) || 20, 1), 50);
+
+    // classId指定がある場合はそのクラスのスレッドだけ
+    const params = [since];
+    let where = "m.sender_role = 'student' AND m.created_at > $1";
+    if (classId) {
+      params.push(classId);
+      where += ` AND (t.class_id = $${params.length})`;
+    }
+
+    const q = await pool.query(
+      `
+      SELECT
+        m.thread_id,
+        t.title,
+        t.class_id,
+        t.student_uid,
+        m.body,
+        m.image_path,
+        m.created_at
+      FROM question_messages m
+      JOIN question_threads t ON t.id = m.thread_id
+      WHERE ${where}
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+      `,
+      params
+    );
+
+    res.json({ notifications: q.rows ?? [] });
+  } catch (e) {
+    console.error("[GET /teacher/notifications]", e);
+    res.status(500).json({ error: "server_error" });
+  }
+});
 
 app.listen(port, () => console.log(`API running on http://localhost:${port}`));
 
