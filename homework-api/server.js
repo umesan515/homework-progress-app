@@ -2,17 +2,23 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const dotenv = require("dotenv");
 const cors = require("cors");
+const helmet = require("helmet");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 
+dotenv.config();
+
 const app = express();
 
+const uploadsRootEnv = process.env.UPLOAD_DIR || "uploads";
+const resolvedUploadsRoot = path.isAbsolute(uploadsRootEnv) ? uploadsRootEnv : path.join(__dirname, uploadsRootEnv);
 
 // --- uploads (question images) ---
-const uploadsRoot = path.join(__dirname, "uploads");
+const uploadsRoot = resolvedUploadsRoot;
 const questionUploadsDir = path.join(uploadsRoot, "questions");
 try {
   fs.mkdirSync(questionUploadsDir, { recursive: true });
@@ -70,20 +76,34 @@ const questionUpload = multer({
     fileSize: 5 * 1024 * 1024, // 5MB
   },
 });
-app.use(express.json());
-app.use(cors());
+app.use(helmet({ crossOriginResourcePolicy: false }));
 
-// ★ 必ず環境変数で設定（あとで .env にしてもOK）
+const corsOrigins = String(process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((v) => v.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || corsOrigins.length === 0 || corsOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("cors_not_allowed"));
+  },
+}));
+app.use(express.json({ limit: "10mb" }));
+
 const JWT_SECRET = process.env.JWT_SECRET || "DEV_SECRET_CHANGE_ME";
 const JWT_EXPIRES_IN = "14d";
 
-const pool = new Pool({
-  host: "127.0.0.1",
-  port: 5432,
-  user: "postgres",
-  password: process.env.PG_PASSWORD || "",
-  database: "homework_app",
-});
+const dbConfig = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL }
+  : {
+      host: process.env.PGHOST || "127.0.0.1",
+      port: Number(process.env.PGPORT || 5432),
+      user: process.env.PGUSER || "postgres",
+      password: process.env.PGPASSWORD || process.env.PG_PASSWORD || "",
+      database: process.env.PGDATABASE || "homework_app",
+    };
+
+const pool = new Pool(dbConfig);
 
 // =========================
 // DB: lightweight migrations (runtime safety)
@@ -3762,7 +3782,14 @@ app.delete("/teacher/materials/:id", requireAuth, requireRole("teacher"), async 
 app.get("/student/materials", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; res.json(await listStudentMaterials(classId)); } catch (e) { console.error("[GET /student/materials]", e); res.status(500).json({ error: "server_error" }); } });
 app.get("/student/materials/:id", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; const rows = await listStudentMaterials(classId); const row = rows.find((x) => x.id === String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /student/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
 
-app.listen(port, () => console.log(`API running on http://localhost:${port}`));
+app.listen(port, () => {
+  const uploadInfo = path.relative(__dirname, uploadsRoot) || uploadsRoot;
+  console.log(`API running on port ${port}`);
+  console.log(`Uploads root: ${uploadInfo}`);
+  if (JWT_SECRET === "DEV_SECRET_CHANGE_ME") {
+    console.warn("[warn] JWT_SECRET is using the development fallback. Set JWT_SECRET in .env before publishing.");
+  }
+});
 
 /**
  * =========================

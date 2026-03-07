@@ -1,5 +1,6 @@
 import { getToken, logout } from "./auth";
 
+// NEXT_PUBLIC_API_BASE should be defined in .env.local / deployment environment.
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:4000";
 
 function resolveUrl(path: string) {

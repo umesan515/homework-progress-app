@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Homework Progress App
 
-## Getting Started
+教育用の課題進捗・理解度・教材管理アプリです。
 
-First, run the development server:
+## 構成
+
+- `homework-progress-app/`: Next.js フロントエンド
+- `homework-api/`: Express + PostgreSQL バックエンド
+- `db/`: SQL スキーマ
+- `docker/`: 開発用 PostgreSQL の例
+
+## 公開リポジトリ化にあたって
+
+このリポジトリには以下を含めません。
+
+- `.env` / `.env.local`
+- `node_modules`
+- `.next`
+- `homework-api/uploads/`
+
+セットアップ時は、各ディレクトリの `.env.example` をコピーして `.env` または `.env.local` を作成してください。
+
+## バックエンド起動
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd homework-api
+npm install
+cp .env.example .env
+node server.js
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## フロントエンド起動
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cd homework-progress-app
+# package.json がある環境で npm install
+cp .env.example .env.local
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 重要メモ
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- 公開前に `JWT_SECRET` を必ず変更してください。
+- PostgreSQL 接続情報は `.env` に置いてください。
+- `homework-api/uploads/` はサーバー側で作成してください。

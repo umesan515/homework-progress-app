@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { apiGet } from "@/lib/api";
+import { API_BASE, apiGet } from "@/lib/api";
 import { getUserFromToken, logout } from "@/lib/auth";
 
 type BookRow = { id: string; name: string };
@@ -228,8 +228,7 @@ export default function TeacherQuestionsPage() {
     setErr(null);
     try {
       const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-      const base = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
-      const res = await fetch(`${base}/teacher/questions/${encodeURIComponent(id)}`, {
+      const res = await fetch(`${API_BASE}/teacher/questions/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
