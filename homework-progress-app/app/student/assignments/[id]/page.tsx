@@ -27,28 +27,24 @@ type AssignmentDetail = {
 };
 
 type Mark = "maru" | "sankaku" | "batsu";
-
 type AttemptNo = 1 | 2 | 3;
-function splitProblemLabel(label: string): { attr: string | null; num: string } {
-  const s = label.trim();
-  // 例: "STEPA 12", "STEPA-12", "例題 3", "StepUp-5" など
-  const m = s.match(/^([A-Za-zぁ-んァ-ヶ一-龠]+)\s*[-‐ー]?\s*(\d.*)$/);
-  if (m) return { attr: m[1], num: m[2] };
-  return { attr: null, num: s };
-}
-
 
 type SubmissionPayload = {
   submission: any | null;
-  // new (3 attempts)
   marksByAttempt?: Record<AttemptNo, Record<string, Mark>>;
   markedAtByAttempt?: Record<AttemptNo, Record<string, string | null>>;
   firstMarkedAtByLabel?: Record<string, string>;
   minutesByAttempt?: Record<AttemptNo, Record<string, number>>;
-  // legacy
   statusByLabel: Record<string, Mark>;
   timeByLabel: Record<string, any>;
 };
+
+function splitProblemLabel(label: string): { attr: string | null; num: string } {
+  const s = label.trim();
+  const m = s.match(/^([A-Za-zぁ-んァ-ヶ一-龠]+)\s*[-‐ー]?\s*(\d.*)$/);
+  if (m) return { attr: m[1], num: m[2] };
+  return { attr: null, num: s };
+}
 
 const formatDue = (dueAt: string | null) => {
   if (!dueAt) return "無期限";
@@ -56,23 +52,43 @@ const formatDue = (dueAt: string | null) => {
   return `${d.toLocaleDateString("ja-JP")} まで`;
 };
 
+const pct = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
+
+const latestMarkForLabel = (sub: SubmissionPayload | null, label: string): Mark | null => {
+  if (!sub) return null;
+  for (const attemptNo of [3, 2, 1] as AttemptNo[]) {
+    const mark = sub.marksByAttempt?.[attemptNo]?.[label] ?? null;
+    if (mark) return mark;
+  }
+  return sub.statusByLabel?.[label] ?? null;
+};
+
+const markLabel = (mark: Mark | null) => {
+  if (mark === "maru") return "○ 理解できた";
+  if (mark === "sankaku") return "△ あと少し";
+  if (mark === "batsu") return "× 要復習";
+  return "未記録";
+};
+
+const markClass = (mark: Mark | null) => {
+  if (mark === "maru") return "ui-status-chip ui-status-maru";
+  if (mark === "sankaku") return "ui-status-chip ui-status-sankaku";
+  if (mark === "batsu") return "ui-status-chip ui-status-batsu";
+  return "ui-status-chip ui-status-empty";
+};
+
 export default function StudentAssignmentPage() {
   const params = useParams<{ id?: string }>();
   const assignmentId = params?.id;
   const router = useRouter();
 
-  // ✅ Hydration対策：初回レンダーで localStorage を読まない
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
-
   const [a, setA] = useState<AssignmentRow | null>(null);
   const [problems, setProblems] = useState<ProblemRow[]>([]);
   const [labels, setLabels] = useState<string[]>([]);
   const [sub, setSub] = useState<SubmissionPayload | null>(null);
-
-  // クリックしたセル（label×attempt）だけに入力ボタンを出す
   const [activeCell, setActiveCell] = useState<{ label: string; attemptNo: AttemptNo } | null>(null);
-
   const [err, setErr] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
@@ -80,14 +96,12 @@ export default function StudentAssignmentPage() {
     const u = getUserFromToken();
     setUser(u);
     setReady(true);
-
     if (!u) {
       router.replace("/login");
       return;
     }
     if (u.role !== "student") {
       router.replace("/teacher");
-      return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -99,7 +113,6 @@ export default function StudentAssignmentPage() {
     }
 
     setErr(null);
-
     const detail = await apiGet<AssignmentDetail>(`/assignments/${encodeURIComponent(assignmentId)}`);
     setA(detail.assignment);
     const ps = Array.isArray(detail.problems) ? detail.problems : [];
@@ -112,25 +125,22 @@ export default function StudentAssignmentPage() {
 
   useEffect(() => {
     (async () => {
-      if (!ready) return;
-      if (!user) return;
+      if (!ready || !user) return;
       await load();
     })().catch((e: any) => {
-      const msg = e?.message ?? "";
-      if (String(msg).includes("401")) {
+      const msg = String(e?.message ?? "読み込みエラー");
+      if (msg.includes("401")) {
         logout();
         router.replace("/login");
         return;
       }
-      setErr(msg || "読み込みエラー");
+      setErr(msg);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, assignmentId, user?.uid]);
 
   const setMark = async (label: string, attemptNo: AttemptNo, mark: Mark) => {
-    if (!assignmentId || assignmentId === "undefined") return;
-    if (!sub) return;
-
+    if (!assignmentId || assignmentId === "undefined" || !sub) return;
     const cur = (sub.marksByAttempt?.[attemptNo] ?? sub.statusByLabel ?? {})[label] ?? null;
     if (cur === mark) return;
 
@@ -140,44 +150,40 @@ export default function StudentAssignmentPage() {
       await apiPost(`/submissions/mark`, { assignmentId, label, mark, attemptNo });
       await load();
     } catch (e: any) {
-      const msg = e?.message ?? "保存に失敗しました。";
-      if (String(msg).includes("401")) {
+      const msg = String(e?.message ?? "保存に失敗しました。");
+      if (msg.includes("401")) {
         logout();
         router.replace("/login");
         return;
       }
-      setErr(String(msg));
+      setErr(msg);
     } finally {
       setSavingKey(null);
     }
   };
 
   const clearMark = async (label: string, attemptNo: AttemptNo) => {
-    if (!assignmentId || assignmentId === "undefined") return;
-    if (!sub) return;
-
+    if (!assignmentId || assignmentId === "undefined" || !sub) return;
     const cur = (sub.marksByAttempt?.[attemptNo] ?? sub.statusByLabel ?? {})[label] ?? null;
-    if (cur === null) return; // 既に未着手（記録なし）
+    if (cur === null) return;
 
     setSavingKey(label);
     setErr(null);
     setActiveCell(null);
     try {
-      // 連続回は「前の回が埋まっている時だけ」入力する運用。
-      // そのため、前の回を未（クリア）にしたら後続回も消す。
       const targets: AttemptNo[] = attemptNo === 1 ? [1, 2, 3] : attemptNo === 2 ? [2, 3] : [3];
       for (const t of targets) {
         await apiPost(`/submissions/clear`, { assignmentId, label, attemptNo: t });
       }
       await load();
     } catch (e: any) {
-      const msg = e?.message ?? "保存に失敗しました。";
-      if (String(msg).includes("401")) {
+      const msg = String(e?.message ?? "保存に失敗しました。");
+      if (msg.includes("401")) {
         logout();
         router.replace("/login");
         return;
       }
-      setErr(String(msg));
+      setErr(msg);
     } finally {
       setSavingKey(null);
     }
@@ -192,7 +198,6 @@ export default function StudentAssignmentPage() {
     return `${date} ${hh}:${mm}`;
   };
 
-  // outside click でセル編集を閉じる
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
@@ -204,66 +209,138 @@ export default function StudentAssignmentPage() {
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
-  const dueText = useMemo(() => {
-    if (!a) return "";
-    return formatDue(a.due_at);
-  }, [a]);
+  const dueText = useMemo(() => (a ? formatDue(a.due_at) : ""), [a]);
 
-  if (!ready) return <main className="p-6">読み込み中...</main>;
-  if (!user) return <main className="p-6">ログインへ遷移中...</main>;
+  const summary = useMemo(() => {
+    const total = labels.length;
+    if (!sub || total === 0) {
+      return { total, done: 0, donePct: 0, understandingPct: 0, latest: { maru: 0, sankaku: 0, batsu: 0, empty: total } };
+    }
+
+    let done = 0;
+    let maru = 0;
+    let sankaku = 0;
+    let batsu = 0;
+    let empty = 0;
+
+    for (const label of labels) {
+      const latest = latestMarkForLabel(sub, label);
+      if (latest) done += 1;
+      if (latest === "maru") maru += 1;
+      else if (latest === "sankaku") sankaku += 1;
+      else if (latest === "batsu") batsu += 1;
+      else empty += 1;
+    }
+
+    const score = maru + sankaku * 0.5;
+    return {
+      total,
+      done,
+      donePct: total ? pct((done / total) * 100) : 0,
+      understandingPct: total ? pct((score / total) * 100) : 0,
+      latest: { maru, sankaku, batsu, empty },
+    };
+  }, [labels, sub]);
+
+  if (!ready) return <main className="ui-page">読み込み中...</main>;
+  if (!user) return <main className="ui-page">ログインへ遷移中...</main>;
 
   return (
-    <main className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-3">
+    <main className="ui-page space-y-6">
+      <section className="space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="ui-page-title">課題の提出状況</h1>
+            <p className="ui-page-subtitle">{a?.title ?? "読み込み中..."}</p>
+          </div>
+          <Link className="ui-soft-button" href="/student/assignments">一覧へ</Link>
+        </div>
+        {err && <p className="text-sm text-red-600 whitespace-pre-wrap">{err}</p>}
+      </section>
+
+      <section className="space-y-3">
         <div>
-          <h1 className="text-xl font-semibold">課題</h1>
-          <div className="text-xs text-gray-600">{a?.title ?? "..."}</div>
+          <h2 className="ui-section-title">課題の概要</h2>
+          <p className="ui-section-note">提出期限や進捗は文章だけでなく，枠と横棒でも確認できます。</p>
         </div>
-        <Link
-          className="rounded-lg border px-2 py-1 bg-white shadow-sm hover:bg-gray-100 hover:shadow transition active:scale-[0.99]"
-          href="/student/assignments"
-        >
-          一覧へ
-        </Link>
-      </div>
-
-      {err && <p className="text-xs text-red-600 whitespace-pre-wrap">{err}</p>}
-
-      {a && (
-        <div className="rounded-xl border p-4 space-y-2">
-          <div className="text-xs text-gray-700">
-            <b>提出期限：</b> {dueText}
+        <div className="ui-frame space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="ui-stat-card">
+              <div className="ui-stat-label">提出期限</div>
+              <div className="mt-2 text-lg font-extrabold text-slate-900">{dueText || "—"}</div>
+              <div className="ui-stat-sub">期限に合わせて記録を更新します。</div>
+            </div>
+            <div className="ui-stat-card">
+              <div className="ui-stat-label">問題数</div>
+              <div className="ui-stat-value">{summary.total}</div>
+              <div className="ui-stat-sub">この課題に含まれる問題数</div>
+            </div>
+            <div className="ui-stat-card">
+              <div className="ui-stat-label">記録済み</div>
+              <div className="ui-stat-value">{summary.done}</div>
+              <div className="ui-stat-sub">最新理解度が入っている問題数</div>
+            </div>
           </div>
-          <div className="text-xs text-gray-700">
-            <b>問題数：</b> {labels.length}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="ui-info-card space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-semibold text-slate-900">進捗</div>
+                <div className="text-sm font-bold text-slate-700">{summary.donePct}%</div>
+              </div>
+              <div className="ui-meter"><div className="ui-meter-fill" style={{ width: `${summary.donePct}%` }} /></div>
+              <div className="text-xs text-slate-500">{summary.done} / {summary.total} 問題を記録済み</div>
+            </div>
+
+            <div className="ui-info-card space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-semibold text-slate-900">理解度</div>
+                <div className="text-sm font-bold text-slate-700">{summary.understandingPct}%</div>
+              </div>
+              <div className="ui-meter">
+                <div className="ui-meter-stack">
+                  <div className="ui-meter-seg bg-green-400" style={{ width: `${summary.total ? (summary.latest.maru / summary.total) * 100 : 0}%` }} />
+                  <div className="ui-meter-seg bg-amber-300" style={{ width: `${summary.total ? (summary.latest.sankaku / summary.total) * 100 : 0}%` }} />
+                  <div className="ui-meter-seg bg-rose-400" style={{ width: `${summary.total ? (summary.latest.batsu / summary.total) * 100 : 0}%` }} />
+                  <div className="ui-meter-seg bg-gray-300" style={{ width: `${summary.total ? (summary.latest.empty / summary.total) * 100 : 0}%` }} />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-green-400" />○ {summary.latest.maru}</span>
+                <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-amber-300" />△ {summary.latest.sankaku}</span>
+                <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-rose-400" />× {summary.latest.batsu}</span>
+                <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-gray-300" />未 {summary.latest.empty}</span>
+              </div>
+            </div>
           </div>
         </div>
-      )}
+      </section>
 
-      <div className="space-y-1">
-        <div className="text-base font-semibold text-gray-700">提出状況</div>
-        <div className="rounded-2xl bg-gray-50 p-4">
+      <section className="space-y-3">
+        <div>
+          <h2 className="ui-section-title">提出状況の一覧</h2>
+          <p className="ui-section-note">質問ボタンを含めて1行に収め，縦幅を抑えています。</p>
+        </div>
+        <div className="ui-frame">
           {!sub ? (
-            <div className="text-xs text-gray-600">読み込み中...</div>
+            <div className="ui-info-card text-sm text-slate-600">読み込み中...</div>
           ) : (
-            <div className="max-h-[520px] overflow-auto rounded-xl bg-white">
-              <table className="w-full text-xs border-collapse">
-                <thead className="bg-gray-50">
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="ui-assignment-table min-w-[860px]">
+                <thead>
                   <tr>
-                    <th className="p-1 text-left w-32 border-b border-gray-200">問題番号</th>
-                    <th className="p-1 text-center w-24 border-b border-gray-200">1回目</th>
-                    <th className="p-1 text-center w-24 border-b border-gray-200">2回目</th>
-                    <th className="p-1 text-center w-24 border-b border-gray-200">3回目</th>
-                    <th className="p-1 text-left w-44 border-b border-gray-200">学習時刻（初回）</th>
+                    <th className="w-[320px] text-left">問題番号</th>
+                    <th className="w-[72px] text-center">1回目</th>
+                    <th className="w-[72px] text-center">2回目</th>
+                    <th className="w-[72px] text-center">3回目</th>
+                    <th className="w-[170px] text-left">学習時刻（初回）</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(problems.length ? problems : labels.map((label) => ({ label, block_id: null, sort_order: 0 } as any))).map((p) => {
+                  {(problems.length ? problems : labels.map((label) => ({ label, block_id: null, sort_order: 0 } as ProblemRow))).map((p) => {
                     const label = p.label;
                     const blockId = p.block_id;
-
                     const saving = savingKey === label;
-                    // 学習時刻（初回）はAPIのキー名が snake_case / camelCase どちらの場合もあるためフォールバックする
                     const anySub: any = sub as any;
                     const firstIso: string | undefined =
                       sub.firstMarkedAtByLabel?.[label] ??
@@ -272,93 +349,35 @@ export default function StudentAssignmentPage() {
                       anySub.marked_at_by_attempt?.[1]?.[label] ??
                       undefined;
                     const firstStamp = formatFirstStamp(firstIso);
+                    const latest = latestMarkForLabel(sub, label);
+                    const split = splitProblemLabel(label);
 
                     const renderCell = (n: AttemptNo) => {
                       const mark = (sub.marksByAttempt?.[n] ?? {})[label] ?? null;
-                      const prevMark = n === 1 ? "_" : (sub.marksByAttempt?.[(n - 1) as AttemptNo] ?? {})[label] ?? null;
-                      // 2回目/3回目は「前の回が埋まっている」時だけ入力できる。
-                      // ただし、既に値が入っている場合は編集できる（過去データ互換）。
+                      const prevMark = n === 1 ? null : (sub.marksByAttempt?.[(n - 1) as AttemptNo] ?? {})[label] ?? null;
                       const enabled = n === 1 || mark !== null || prevMark !== null;
                       const isActive = !!activeCell && activeCell.label === label && activeCell.attemptNo === n;
                       const symbol = mark === "maru" ? "○" : mark === "sankaku" ? "△" : mark === "batsu" ? "×" : "";
-
-                      const cellBg =
-                        mark === "maru"
-                          ? "bg-green-100"
-                          : mark === "sankaku"
-                            ? "bg-yellow-100"
-                            : mark === "batsu"
-                              ? "bg-red-100"
-                              : enabled
-                                ? "bg-white"
-                                : "bg-gray-50";
+                      const cellBg = mark === "maru" ? "bg-green-100" : mark === "sankaku" ? "bg-yellow-100" : mark === "batsu" ? "bg-red-100" : enabled ? "bg-white" : "bg-gray-50";
 
                       return (
                         <td
                           key={`${label}-${n}`}
-                          className={`relative text-center align-middle border-b border-gray-200 border-l border-gray-200 h-9 ${cellBg} ${
-                            enabled ? "cursor-pointer hover:bg-gray-100" : "cursor-default text-gray-400"
-                          } transition`}
+                          className={`ui-compact-cell ${cellBg} ${enabled ? "cursor-pointer hover:bg-slate-50" : "cursor-default text-gray-400"}`}
                           onClick={() => {
                             if (!enabled) return;
-                            // 同じセルを再クリックしたら閉じる
                             setActiveCell((prev) => (prev && prev.label === label && prev.attemptNo === n ? null : { label, attemptNo: n }));
                           }}
                           data-cell
                         >
-                          <span className="text-base font-semibold select-none">{symbol}</span>
-
+                          <span className="ui-compact-mark">{symbol}</span>
                           {isActive && enabled && !saving && (
-                            <div className="absolute z-20 left-1/2 top-full mt-1 -translate-x-1/2 translate-x-2" data-cell-pop>
-                              <div className="rounded-xl border bg-white shadow-lg p-2 flex flex-col gap-2 min-w-[56px]" data-cell-editor>
-                                <button
-                                  className="rounded-lg px-3 py-2 text-sm border hover:bg-green-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setMark(label, n, "maru");
-                                    setActiveCell(null);
-                                  }}
-                                  title="理解できた"
-                                  type="button"
-                                >
-                                  ○
-                                </button>
-                                <button
-                                  className="rounded-lg px-3 py-2 text-sm border hover:bg-yellow-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setMark(label, n, "sankaku");
-                                    setActiveCell(null);
-                                  }}
-                                  title="あと少し"
-                                  type="button"
-                                >
-                                  △
-                                </button>
-                                <button
-                                  className="rounded-lg px-3 py-2 text-sm border hover:bg-red-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setMark(label, n, "batsu");
-                                    setActiveCell(null);
-                                  }}
-                                  title="要復習"
-                                  type="button"
-                                >
-                                  ×
-                                </button>
-                                <button
-                                  className="rounded-lg px-3 py-2 text-sm border hover:bg-gray-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    clearMark(label, n);
-                                    setActiveCell(null);
-                                  }}
-                                  title="未（空白に戻す）"
-                                  type="button"
-                                >
-                                  未
-                                </button>
+                            <div className="absolute z-20 left-1/2 top-full mt-1 -translate-x-1/2" data-cell-pop>
+                              <div className="rounded-xl border bg-white shadow-lg p-1.5 flex flex-col gap-1 min-w-[64px]" data-cell-editor>
+                                <button className="rounded-lg px-3 py-2 text-sm border hover:bg-green-100" onClick={(e) => { e.stopPropagation(); setMark(label, n, "maru"); setActiveCell(null); }} type="button">○</button>
+                                <button className="rounded-lg px-3 py-2 text-sm border hover:bg-yellow-100" onClick={(e) => { e.stopPropagation(); setMark(label, n, "sankaku"); setActiveCell(null); }} type="button">△</button>
+                                <button className="rounded-lg px-3 py-2 text-sm border hover:bg-red-100" onClick={(e) => { e.stopPropagation(); setMark(label, n, "batsu"); setActiveCell(null); }} type="button">×</button>
+                                <button className="rounded-lg px-3 py-2 text-sm border hover:bg-gray-100" onClick={(e) => { e.stopPropagation(); clearMark(label, n); setActiveCell(null); }} type="button">未</button>
                               </div>
                             </div>
                           )}
@@ -368,41 +387,24 @@ export default function StudentAssignmentPage() {
 
                     return (
                       <tr key={label}>
-                        <td className="p-1 border-b border-gray-200">
-  {(() => {
-    const s = splitProblemLabel(label);
-    return (
-      <div className="flex items-center gap-2">
-        {s.attr ? (
-          <span className="inline-block text-[11px] rounded-md bg-gray-200 text-gray-700 px-2 py-1">
-            {s.attr}
-          </span>
-        ) : null}
-        <span className="inline-block font-mono text-xs rounded-md border bg-gray-50 px-2 py-1">{s.num}</span>
-        <Link
-          className=\"rounded-lg border px-2 py-1 bg-white shadow-sm hover:bg-gray-100 hover:shadow transition active:scale-[0.99] text-[11px] ml-auto\"
-          href={\`/student/questions?blockId=${encodeURIComponent(blockId ?? \"\")}\&title=${encodeURIComponent(\`【課題】${label}\`)}\`}
-        >
-          質問
-        </Link>
-      </div>
-    );
-  })()}
-</td>
+                        <td className="px-2 py-1.5">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {split.attr ? <span className="ui-status-chip ui-status-empty">{split.attr}</span> : null}
+                            <span className="ui-kbd-badge">{split.num}</span>
+                            <span className={markClass(latest)}>{markLabel(latest)}</span>
+                            <Link className="ui-row-link ml-auto" href={`/student/questions?blockId=${encodeURIComponent(blockId ?? "")}&title=${encodeURIComponent(`【課題】${label}`)}`}>質問する</Link>
+                          </div>
+                        </td>
                         {renderCell(1)}
                         {renderCell(2)}
                         {renderCell(3)}
-                        <td className="p-1 border-b border-gray-200 border-l border-gray-200 text-xs text-gray-700">
-                          {firstStamp || <span className="text-gray-400">—</span>}
-                        </td>
+                        <td className="px-2 py-1.5 text-xs text-gray-700">{firstStamp || <span className="text-gray-400">—</span>}</td>
                       </tr>
                     );
                   })}
                   {labels.length === 0 && (
                     <tr>
-                      <td className="p-3 text-gray-600" colSpan={5}>
-                        問題がありません。
-                      </td>
+                      <td className="px-3 py-4 text-gray-600" colSpan={5}>問題がありません。</td>
                     </tr>
                   )}
                 </tbody>
@@ -410,17 +412,10 @@ export default function StudentAssignmentPage() {
             </div>
           )}
         </div>
-      </div>
+      </section>
 
       <StickyActionBar>
-        <div className="flex justify-end gap-2">
-          <Link
-            className="rounded-lg border px-4 py-2 bg-white shadow-sm hover:bg-gray-100 hover:shadow transition active:scale-[0.99]"
-            href="/student/assignments"
-          >
-            戻る
-          </Link>
-        </div>
+        <div className="flex justify-end gap-2"><Link className="ui-soft-button" href="/student/assignments">戻る</Link></div>
       </StickyActionBar>
     </main>
   );

@@ -254,187 +254,184 @@ export default function TeacherHomePage() {
   if (!user) return <main className="p-6">ログインへ遷移中...</main>;
 
   return (
-    <main className="p-6 space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">教師ホーム</h1>
+    <main className="page-shell">
+      <div className="page-title-block">
+        <h1 className="page-title">教師ホーム</h1>
+        <p className="page-subtitle">配布、確認、分析、教材管理までを一画面で見渡せるよう整理しました。</p>
+        {err && <p className="text-sm text-rose-600 whitespace-pre-wrap">{err}</p>}
+        {busy && <p className="text-sm text-slate-500">処理中...</p>}
       </div>
 
-      {err && <p className="text-sm text-red-600 whitespace-pre-wrap">{err}</p>}
-      {busy && <p className="text-sm text-gray-600">処理中...</p>}
+      <section className="section-stack">
+        <div>
+          <h2 className="section-heading">よく使う機能</h2>
+          <p className="section-caption">主要な遷移は、色付きのカードをそのまま押して開けます。</p>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <Link className="home-action-card theme-blue" href="/teacher/templates">
+            <div className="home-action-card-title">課題配布</div>
+            <div className="home-action-card-desc">テンプレートを作成し、複数クラスへ配布できます。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+          <Link className="home-action-card theme-violet" href="/teacher/assignments">
+            <div className="home-action-card-title">提出状況</div>
+            <div className="home-action-card-desc">配布済み課題の一覧確認、停止、編集、削除を行います。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+          <Link className="home-action-card theme-emerald" href="/teacher/classes">
+            <div className="home-action-card-title">分析</div>
+            <div className="home-action-card-desc">クラス別の進捗や理解度を見て、指導の優先度を整理します。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+          <Link className="home-action-card theme-amber" href="/teacher/books">
+            <div className="home-action-card-title">問題集管理</div>
+            <div className="home-action-card-desc">教材データの登録、章や大問の整理、出題の確認を行います。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+          <Link className="home-action-card theme-rose" href="/teacher/questions">
+            <div className="home-action-card-title">質問対応</div>
+            <div className="home-action-card-desc">生徒から届いた質問に返信し、解決済みの管理も行えます。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+          <Link className="home-action-card theme-indigo" href="/teacher/materials">
+            <div className="home-action-card-title">教材置き場</div>
+            <div className="home-action-card-desc">図、動画、補助教材を登録し、授業用ライブラリを整えます。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
+        </div>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/templates">
-          <div className="font-semibold">課題配布（テンプレ）</div>
-          <div className="text-sm text-gray-600">テンプレ作成・編集・配布</div>
-        </Link>
+      <section className="section-stack">
+        <div>
+          <h2 className="section-heading">運用の見通し</h2>
+          <p className="section-caption">今すぐ把握したい数を、数値カードで見やすくまとめています。</p>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="info-card">
+            <div className="info-card-label">配布中の課題</div>
+            <div className="info-card-value">{assignments.filter((a) => a.status === "open").length}</div>
+            <div className="info-card-sub">現在生徒が取り組んでいる課題数です。</div>
+          </div>
+          <div className="info-card">
+            <div className="info-card-label">停止中の課題</div>
+            <div className="info-card-value">{assignments.filter((a) => a.status === "closed").length}</div>
+            <div className="info-card-sub">一時停止している課題です。</div>
+          </div>
+          <div className="info-card">
+            <div className="info-card-label">共有テスト予定</div>
+            <div className="info-card-value">{sharedTests.length}</div>
+            <div className="info-card-sub">生徒へ配信される予定件数です。</div>
+          </div>
+          <div className="info-card">
+            <div className="info-card-label">登録クラス数</div>
+            <div className="info-card-value">{classIds.length}</div>
+            <div className="info-card-sub">現在配布対象として扱えるクラス数です。</div>
+          </div>
+        </div>
+      </section>
 
-        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/assignments">
-          <div className="font-semibold">進捗確認（配布済み課題）</div>
-          <div className="text-sm text-gray-600">配布済み課題一覧・停止・削除</div>
-        </Link>
-
-        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/classes">
-          <div className="font-semibold">クラス別進捗（ダッシュボード）</div>
-          <div className="text-sm text-gray-600">クラスごとに配布課題と生徒進捗を確認</div>
-        </Link>
-
-        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/books">
-          <div className="font-semibold">問題集管理（問題一覧）</div>
-          <div className="text-sm text-gray-600">問題集→章→大問の登録・過去出題の把握</div>
-        </Link>
-
-        <Link className="rounded-xl border p-4 hover:bg-gray-100 hover:shadow-sm transition" href="/teacher/questions">
-          <div className="font-semibold">質問（Q&A）</div>
-          <div className="text-sm text-gray-600">生徒からの質問確認・返信・解決管理</div>
-        </Link>
-      </div>
-
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="space-y-1">
-          <div className="text-lg font-semibold text-gray-700">カレンダー（課題期限・テスト）</div>
-          <MonthCalendar headingOutside events={calendarEvents} />
+      <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <div className="section-stack">
+          <div>
+            <h2 className="section-heading">カレンダー</h2>
+            <p className="section-caption">課題期限とテスト予定をひとつの月表示で確認します。</p>
+          </div>
+          <div className="soft-panel">
+            <MonthCalendar headingOutside events={calendarEvents} />
+          </div>
         </div>
 
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <div className="text-lg font-semibold text-gray-700">共有テスト予定（生徒へ配信）</div>
-            <div className="rounded-2xl bg-gray-50 p-4 space-y-3">
-              <div className="text-xs text-gray-500">
-                ※ ここで登録したテストは、生徒側カレンダーにも表示されます（クラス指定／ALL可）。
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-sm">テスト名</div>
-                <input
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={sharedTitle}
-                  onChange={(e) => setSharedTitle(e.target.value)}
-                />
-
-                <div className="text-sm">日付</div>
-                <input
-                  className="rounded-lg border px-3 py-2"
-                  type="date"
-                  value={sharedDate}
-                  onChange={(e) => setSharedDate(e.target.value)}
-                />
-
-                <div className="text-sm">配信クラス（複数選択）</div>
-                <div className="flex flex-wrap gap-3">
-                  <label className="flex items-center gap-2">
+        <div className="section-stack">
+          <div>
+            <h2 className="section-heading">予定の管理</h2>
+            <p className="section-caption">共有予定と個人用メモをこの場で整えられます。</p>
+          </div>
+          <div className="soft-panel space-y-4">
+            <div className="soft-panel-muted">
+              <div className="text-sm font-bold text-slate-800">共有テスト予定（生徒へ配信）</div>
+              <div className="mt-1 text-xs text-slate-500">ここで登録した予定は、生徒側カレンダーにも表示されます。</div>
+              <div className="mt-4 space-y-2">
+                <label className="text-sm text-slate-700">テスト名</label>
+                <input className="form-input" value={sharedTitle} onChange={(e) => setSharedTitle(e.target.value)} />
+                <label className="text-sm text-slate-700">日付</label>
+                <input className="form-input max-w-[220px]" type="date" value={sharedDate} onChange={(e) => setSharedDate(e.target.value)} />
+                <div className="text-sm text-slate-700">配信クラス（複数選択）</div>
+                <div className="flex flex-wrap gap-2">
+                  <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700">
                     <input type="checkbox" checked={sharedSelected.has("ALL")} onChange={() => toggleSharedClass("ALL")} />
-                    ALL（全クラス）
+                    ALL
                   </label>
                   {classIds.map((c) => (
-                    <label key={c} className="flex items-center gap-2">
+                    <label key={c} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700">
                       <input type="checkbox" checked={sharedSelected.has(c)} onChange={() => toggleSharedClass(c)} />
                       {c}
                     </label>
                   ))}
                 </div>
-
-                <button
-                  className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition disabled:opacity-50"
-                  onClick={addSharedTest}
-                  disabled={busy}
-                >
-                  共有テストを追加
-                </button>
+                <button className="subtle-button" onClick={addSharedTest} disabled={busy}>共有テストを追加</button>
               </div>
-
               {sharedTests.length === 0 ? (
-                <div className="text-sm text-gray-600">共有テスト予定は未登録です。</div>
+                <div className="mt-4 text-sm text-slate-600">共有テスト予定は未登録です。</div>
               ) : (
-                <div className="space-y-2">
+                <div className="mt-4 space-y-2">
                   {sharedTests.map((t) => (
-                    <div key={t.id} className="flex items-center justify-between gap-2 rounded-xl border p-3">
-                      <div className="text-sm">
-                        <div className="font-semibold">{t.title}</div>
-                        <div className="text-gray-600">
-                          {t.event_date} / 配信: {(t.class_ids ?? []).join(", ")}
-                        </div>
+                    <div key={t.id} className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0 text-sm">
+                        <div className="font-semibold text-slate-900">{t.title}</div>
+                        <div className="text-slate-600">{t.event_date} / 配信: {(t.class_ids ?? []).join(", ")}</div>
                       </div>
-                      <button
-                        className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition text-sm text-red-600"
-                        onClick={() => deleteSharedTest(t.id)}
-                        disabled={busy}
-                      >
-                        削除
-                      </button>
+                      <button className="danger-button" onClick={() => deleteSharedTest(t.id)} disabled={busy}>削除</button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="space-y-1">
-            <div className="text-lg font-semibold text-gray-700">ローカルテスト予定（この端末のみ）</div>
-            <div className="rounded-2xl bg-gray-50 p-4 space-y-3">
-              <div className="text-xs text-gray-500">※ 個人メモ用途（共有されません）。</div>
-
-              <div className="space-y-2">
-                <div className="text-sm">テスト名</div>
-                <input
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={localTitle}
-                  onChange={(e) => setLocalTitle(e.target.value)}
-                />
-                <div className="text-sm">日付</div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <input
-                    className="rounded-lg border px-3 py-2"
-                    type="date"
-                    value={localDate}
-                    onChange={(e) => setLocalDate(e.target.value)}
-                  />
-                  <button
-                    className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition"
-                    onClick={addLocalTest}
-                  >
-                    追加
-                  </button>
+            <div className="soft-panel-muted">
+              <div className="text-sm font-bold text-slate-800">ローカルテスト予定（この端末のみ）</div>
+              <div className="mt-1 text-xs text-slate-500">個人メモ用です。共有はされません。</div>
+              <div className="mt-4 space-y-2">
+                <label className="text-sm text-slate-700">テスト名</label>
+                <input className="form-input" value={localTitle} onChange={(e) => setLocalTitle(e.target.value)} />
+                <label className="text-sm text-slate-700">日付</label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input className="form-input w-auto min-w-[180px]" type="date" value={localDate} onChange={(e) => setLocalDate(e.target.value)} />
+                  <button className="subtle-button" onClick={addLocalTest}>追加</button>
                 </div>
               </div>
-
               {localTests.length === 0 ? (
-                <div className="text-sm text-gray-600">ローカル予定は未登録です。</div>
+                <div className="mt-4 text-sm text-slate-600">ローカル予定は未登録です。</div>
               ) : (
-                <div className="space-y-2">
+                <div className="mt-4 space-y-2">
                   {localTests.map((t) => (
-                    <div key={t.id} className="flex items-center justify-between gap-2 rounded-xl border p-3">
-                      <div className="text-sm">
-                        <div className="font-semibold">{t.title}</div>
-                        <div className="text-gray-600">{t.date}</div>
+                    <div key={t.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <div className="min-w-0 text-sm">
+                        <div className="font-semibold text-slate-900">{t.title}</div>
+                        <div className="text-slate-600">{t.date}</div>
                       </div>
-                      <button
-                        className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition text-sm"
-                        onClick={() => removeLocalTest(t.id)}
-                      >
-                        削除
-                      </button>
+                      <button className="subtle-button" onClick={() => removeLocalTest(t.id)}>削除</button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="space-y-1">
-            <div className="text-lg font-semibold text-gray-700">直近14日（今日〜）</div>
-            <div className="rounded-2xl bg-gray-50 p-4 space-y-2">
-              {upcoming.length === 0 ? (
-                <div className="text-sm text-gray-600">直近の予定はありません。</div>
-              ) : (
-                <ul className="text-sm space-y-1">
-                  {upcoming.map((e) => (
-                    <li key={e.id} className="flex items-start gap-2">
-                      <span className="text-gray-600 w-24 shrink-0">{e.date}</span>
-                      <span>{e.title}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+            <div className="soft-panel-muted">
+              <div className="text-sm font-bold text-slate-800">直近14日（今日〜）</div>
+              <div className="mt-3">
+                {upcoming.length === 0 ? (
+                  <div className="text-sm text-slate-600">直近の予定はありません。</div>
+                ) : (
+                  <ul className="space-y-2 text-sm text-slate-700">
+                    {upcoming.map((e) => (
+                      <li key={e.id} className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                        <span className="w-24 shrink-0 font-semibold text-slate-500">{e.date}</span>
+                        <span className="min-w-0">{e.title}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
         </div>

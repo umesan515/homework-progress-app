@@ -87,52 +87,80 @@ export default function StudentAssignmentsPage() {
   if (!user) return <main className="p-6">ログインへ遷移中...</main>;
 
   return (
-    <main className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">課題一覧</h1>
-        <Link className="rounded-lg border px-3 py-2 hover:bg-gray-50" href="/student">
-          ホームへ
-        </Link>
+    <main className="page-shell">
+      <div className="page-title-block">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="page-title">課題一覧</h1>
+            <p className="page-subtitle">配布された課題をまとめて見渡し、詳細ページから記録を入力します。</p>
+          </div>
+          <Link className="subtle-button self-start" href="/student">ホームへ</Link>
+        </div>
+        {err && <p className="text-sm text-rose-600">{err}</p>}
       </div>
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
-
-      <div className="space-y-3">
-        {viewRows.map((r) => (
-          <Link
-            key={r.id}
-            href={`/student/assignments/${r.id}`}
-            className="block rounded-xl border p-4 hover:bg-gray-50"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-semibold truncate">{r.title}</div>
-                <div className="text-sm text-gray-600">期限：{r.dueText}</div>
-
-                {r.tag ? (
-                  <div className="mt-2">
-                    <span className="inline-block rounded-full border px-3 py-1 text-xs text-gray-700 bg-white">
-                      {r.tag}
-                    </span>
-                  </div>
-                ) : null}
-
-                <div className="text-sm text-gray-600 mt-2">
-                  進捗：{r.done}/{r.total}（{r.pct}%）{" "}
-                  <span className="text-xs">
-                    ○{r.maru} / △{r.sankaku} / ×{r.batsu}
-                  </span>
-                </div>
-              </div>
-              <div className="text-sm text-gray-500 shrink-0">開く</div>
+      <section className="section-stack">
+        <div>
+          <h2 className="section-heading">配布中の課題</h2>
+          <p className="section-caption">以前のカードデザインに近い、見通しのよい一覧に戻しています。</p>
+        </div>
+        <div className="soft-panel space-y-4">
+          {viewRows.length === 0 && !err ? (
+            <div className="rounded-[22px] border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-600">
+              課題がありません。
             </div>
-          </Link>
-        ))}
+          ) : (
+            viewRows.map((r, i) => {
+              const empty = Math.max(0, r.total - (r.maru + r.sankaku + r.batsu));
+              return (
+                <Link
+                  key={r.id}
+                  href={`/student/assignments/${r.id}`}
+                  className={`assignment-list-card ${i % 3 === 0 ? "theme-blue" : i % 3 === 1 ? "theme-emerald" : "theme-violet"}`}
+                >
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="truncate text-xl font-bold text-slate-900">{r.title}</div>
+                        {r.tag ? <span className="inline-chip">{r.tag}</span> : null}
+                      </div>
+                      <div className="mt-2 text-sm text-slate-600">提出期限：{r.dueText}</div>
 
-        {viewRows.length === 0 && !err && (
-          <div className="text-sm text-gray-600">課題がありません。</div>
-        )}
-      </div>
+                      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3 text-sm text-slate-700">
+                            <span className="font-semibold">進捗</span>
+                            <span>{r.done}/{r.total}（{r.pct}%）</span>
+                          </div>
+                          <div className="progress-track mt-2">
+                            <div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, r.pct))}%` }} />
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3 text-sm text-slate-700">
+                            <span className="font-semibold">理解度</span>
+                            <span>○{r.maru} / △{r.sankaku} / ×{r.batsu}</span>
+                          </div>
+                          <div className="understanding-track mt-2">
+                            <div className="u-maru" style={{ width: `${(r.maru / r.totalSafe) * 100}%` }} />
+                            <div className="u-sankaku" style={{ width: `${(r.sankaku / r.totalSafe) * 100}%` }} />
+                            <div className="u-batsu" style={{ width: `${(r.batsu / r.totalSafe) * 100}%` }} />
+                            <div className="u-empty" style={{ width: `${(empty / r.totalSafe) * 100}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      <span className="home-action-card-arrow">開く</span>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })
+          )}
+        </div>
+      </section>
     </main>
   );
 }

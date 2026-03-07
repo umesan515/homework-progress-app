@@ -31,9 +31,29 @@ const defaultConfigByKind: Record<InteractiveKind, string> = {
   bars: JSON.stringify({ labels: ["A", "B", "C", "D"], values: [3, 5, 2, 4] }, null, 2),
 };
 
+const subjectOptions = [
+  { value: "math", label: "数学" },
+  { value: "english", label: "英語" },
+  { value: "japanese", label: "国語" },
+  { value: "science", label: "理科" },
+  { value: "social", label: "社会" },
+  { value: "informatics", label: "情報" },
+  { value: "other", label: "その他" },
+] as const;
+
+const materialTypeOptions: Array<{ value: MaterialType; label: string; desc: string }> = [
+  { value: "image", label: "画像", desc: "図や板書資料、説明画像向け" },
+  { value: "video", label: "動画", desc: "授業動画や解説クリップ向け" },
+  { value: "interactive", label: "インタラクティブ", desc: "値を変えて理解する教材向け" },
+  { value: "app", label: "アプリ", desc: "単独HTML教材をそのまま公開" },
+];
+
 function normalizeClasses(list: ClassRow[] | any): string[] {
   const arr = Array.isArray(list) ? list : Array.isArray(list?.classIds) ? list.classIds : [];
-  return arr.map((x: any) => String(x?.class_id ?? x?.classId ?? x?.id ?? x ?? "").trim()).filter(Boolean).sort();
+  return arr
+    .map((x: any) => String(x?.class_id ?? x?.classId ?? x?.id ?? x ?? "").trim())
+    .filter(Boolean)
+    .sort();
 }
 
 async function uploadSingle(path: string, file: File) {
@@ -42,9 +62,35 @@ async function uploadSingle(path: string, file: File) {
   return apiPostForm<MaterialUploadResponse>(path, fd);
 }
 
+function FileUploadBox({
+  title,
+  description,
+  accept,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  accept: string;
+  onChange: (file: File | null) => void;
+}) {
+  return (
+    <label className="panel-muted block p-4">
+      <div className="space-y-1">
+        <div className="text-sm font-semibold text-slate-800">{title}</div>
+        <div className="text-xs leading-5 text-slate-500">{description}</div>
+      </div>
+      <input
+        type="file"
+        accept={accept}
+        className="mt-4 block w-full text-sm text-slate-600 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
+        onChange={(e) => onChange(e.target.files?.[0] ?? null)}
+      />
+    </label>
+  );
+}
+
 export default function TeacherMaterialNewPage() {
   const router = useRouter();
-  
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -81,8 +127,6 @@ export default function TeacherMaterialNewPage() {
       .catch((e: any) => setErr(String(e?.message ?? "クラス一覧の取得に失敗しました。")));
   }, [ready]);
 
-  
-
   const previewRow = useMemo<MaterialRow>(() => {
     let parsed: Record<string, any> | null = null;
     try {
@@ -92,7 +136,7 @@ export default function TeacherMaterialNewPage() {
     }
     return {
       id: "preview",
-      title: form.title || "プレビュー",
+      title: form.title || "プレビュー教材",
       description: form.description || null,
       subject: form.subject,
       unit_name: form.unit_name || null,
@@ -110,8 +154,19 @@ export default function TeacherMaterialNewPage() {
     };
   }, [form]);
 
-  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((prev) => ({ ...prev, [key]: value }));
-  const toggleClass = (classId: string) => setForm((prev) => ({ ...prev, class_ids: prev.class_ids.includes(classId) ? prev.class_ids.filter((x) => x !== classId) : [...prev.class_ids, classId] }));
+  const selectedTypeMeta = materialTypeOptions.find((item) => item.value === form.material_type);
+  const selectedSubjectLabel = subjectOptions.find((item) => item.value === form.subject)?.label ?? form.subject;
+
+  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const toggleClass = (classId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      class_ids: prev.class_ids.includes(classId) ? prev.class_ids.filter((x) => x !== classId) : [...prev.class_ids, classId],
+    }));
+  };
 
   const onUpload = async (kind: "image" | "video" | "thumb" | "app", file: File | null) => {
     if (!file) return;
@@ -133,12 +188,17 @@ export default function TeacherMaterialNewPage() {
     if (!form.title.trim()) return setErr("タイトルを入力してください。");
     if (form.material_type !== "interactive" && !form.content_url.trim()) return setErr("教材ファイルまたはURLを設定してください。");
     if (form.material_type === "interactive") {
-      try { JSON.parse(form.interactive_config_text || "{}"); } catch { return setErr("インタラクティブ設定JSONが不正です。"); }
+      try {
+        JSON.parse(form.interactive_config_text || "{}");
+      } catch {
+        return setErr("インタラクティブ設定JSONが不正です。");
+      }
     }
+
     setBusy(true);
     setErr(null);
     try {
-      const body = {
+      await apiPost("/teacher/materials", {
         title: form.title,
         description: form.description,
         subject: form.subject,
@@ -151,12 +211,15 @@ export default function TeacherMaterialNewPage() {
         interactive_config: form.material_type === "interactive" ? JSON.parse(form.interactive_config_text || "{}") : null,
         is_published: form.is_published,
         class_ids: form.class_ids,
-      };
-      await apiPost("/teacher/materials", body);
+      });
       router.replace("/teacher/materials");
     } catch (e: any) {
       const msg = String(e?.message ?? "保存に失敗しました。");
-      if (msg.includes("401")) { logout(); router.replace("/login"); return; }
+      if (msg.includes("401")) {
+        logout();
+        router.replace("/login");
+        return;
+      }
       setErr(msg);
     } finally {
       setBusy(false);
@@ -164,34 +227,234 @@ export default function TeacherMaterialNewPage() {
   };
 
   return (
-    <main className="p-6 space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-xl font-semibold">教材を追加</h1>
-        <div className="text-sm text-gray-600">画像・動画はこの画面から直接アップロードできます。アプリ教材は単独HTMLファイルをアップロードしてください。</div>
-      </div>
-      <section className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
-        <div className="rounded-2xl border bg-gray-50 p-4 space-y-4">
-          {err && <div className="text-sm text-red-600 whitespace-pre-wrap">{err}</div>}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="space-y-1 text-sm"><div>タイトル</div><input className="w-full rounded-lg border px-3 py-2" value={form.title} onChange={(e) => setField("title", e.target.value)} /></label>
-            <label className="space-y-1 text-sm"><div>教科</div><select className="w-full rounded-lg border px-3 py-2" value={form.subject} onChange={(e) => setField("subject", e.target.value)}><option value="math">数学</option><option value="english">英語</option><option value="japanese">国語</option><option value="science">理科</option><option value="social">社会</option><option value="informatics">情報</option><option value="other">その他</option></select></label>
-            <label className="space-y-1 text-sm"><div>単元</div><input className="w-full rounded-lg border px-3 py-2" value={form.unit_name} onChange={(e) => setField("unit_name", e.target.value)} /></label>
-            <label className="space-y-1 text-sm"><div>学年</div><input className="w-full rounded-lg border px-3 py-2" value={form.grade_level} onChange={(e) => setField("grade_level", e.target.value)} placeholder="例: 高1" /></label>
-          </div>
-          <label className="space-y-1 text-sm block"><div>説明</div><textarea className="w-full rounded-lg border px-3 py-2 min-h-28" value={form.description} onChange={(e) => setField("description", e.target.value)} /></label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="space-y-1 text-sm"><div>教材種別</div><select className="w-full rounded-lg border px-3 py-2" value={form.material_type} onChange={(e) => setField("material_type", e.target.value as MaterialType)}><option value="image">画像</option><option value="video">動画</option><option value="interactive">インタラクティブ</option><option value="app">アプリ（単独HTML）</option></select></label>
-            <label className="flex items-center gap-2 text-sm pt-7"><input type="checkbox" checked={form.is_published} onChange={(e) => setField("is_published", e.target.checked)} />公開する</label>
-          </div>
-          {form.material_type === "image" && <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><label className="space-y-2 text-sm"><div>画像ファイルをアップロード</div><input type="file" accept="image/*" onChange={(e) => onUpload("image", e.target.files?.[0] ?? null)} /></label><label className="space-y-2 text-sm"><div>サムネイルをアップロード</div><input type="file" accept="image/*" onChange={(e) => onUpload("thumb", e.target.files?.[0] ?? null)} /></label></div>}
-          {form.material_type === "video" && <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><label className="space-y-2 text-sm"><div>動画ファイルをアップロード</div><input type="file" accept="video/mp4,video/webm,video/ogg" onChange={(e) => onUpload("video", e.target.files?.[0] ?? null)} /></label><label className="space-y-2 text-sm"><div>サムネイルをアップロード</div><input type="file" accept="image/*" onChange={(e) => onUpload("thumb", e.target.files?.[0] ?? null)} /></label></div>}
-          {form.material_type === "app" && <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><label className="space-y-2 text-sm"><div>単独HTMLファイルをアップロード</div><input type="file" accept=".html,.htm,text/html" onChange={(e) => onUpload("app", e.target.files?.[0] ?? null)} /><div className="text-xs text-gray-500">JS/CSS を1ファイルにまとめた教材を想定しています。</div></label><label className="space-y-2 text-sm"><div>サムネイルをアップロード</div><input type="file" accept="image/*" onChange={(e) => onUpload("thumb", e.target.files?.[0] ?? null)} /></label></div>}
-          {form.material_type !== "interactive" && <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><label className="space-y-1 text-sm"><div>教材URL</div><input className="w-full rounded-lg border px-3 py-2" value={form.content_url} onChange={(e) => setField("content_url", e.target.value)} /></label><label className="space-y-1 text-sm"><div>サムネイルURL</div><input className="w-full rounded-lg border px-3 py-2" value={form.thumbnail_url} onChange={(e) => setField("thumbnail_url", e.target.value)} /></label></div>}
-          {form.material_type === "interactive" && <div className="space-y-4"><label className="space-y-1 text-sm block"><div>インタラクティブ種別</div><select className="w-full rounded-lg border px-3 py-2" value={form.interactive_kind} onChange={(e) => { const next = e.target.value as InteractiveKind; setForm((prev) => ({ ...prev, interactive_kind: next, interactive_config_text: defaultConfigByKind[next] })); }}><option value="linear">一次関数</option><option value="parabola">二次関数</option><option value="bars">棒グラフ</option></select></label><label className="space-y-1 text-sm block"><div>設定JSON</div><textarea className="w-full rounded-lg border px-3 py-2 min-h-52 font-mono text-xs" value={form.interactive_config_text} onChange={(e) => setField("interactive_config_text", e.target.value)} /></label></div>}
-          <div className="space-y-2"><div className="text-sm font-medium">公開対象クラス（未選択なら全体公開）</div><div className="flex flex-wrap gap-2">{classIds.map((classId) => <label key={classId} className={`rounded-full border px-3 py-2 text-sm ${form.class_ids.includes(classId) ? "bg-emerald-50 border-emerald-300" : "bg-white"}`}><input type="checkbox" className="mr-2" checked={form.class_ids.includes(classId)} onChange={() => toggleClass(classId)} />{classId}</label>)}{classIds.length === 0 && <div className="text-sm text-gray-500">クラス情報がまだありません。</div>}</div></div>
-          <div className="flex flex-wrap gap-3"><button disabled={busy} className="rounded-lg border px-4 py-2 bg-white hover:bg-gray-100 hover:shadow-sm transition disabled:opacity-60" onClick={onSubmit}>{busy ? "保存中..." : "保存"}</button><Link href="/teacher/materials" className="rounded-lg border px-4 py-2 hover:bg-gray-100 hover:shadow-sm transition">一覧へ戻る</Link></div>
+    <main className="page-shell space-y-6">
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <span className="chip">教師ページ</span>
+          <span className="chip">教材置き場</span>
+          <span className="chip">新規作成</span>
         </div>
-        <div className="space-y-2"><div className="text-lg font-semibold text-gray-700">プレビュー</div><div className="rounded-2xl border bg-white p-4 space-y-3"><div className="text-lg font-semibold">{previewRow.title}</div><div className="text-sm text-gray-600">{previewRow.description || "説明なし"}</div><MaterialPreview material={previewRow} /></div></div>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <h1 className="page-title">教材を追加</h1>
+            <p className="page-subtitle">
+              画像・動画・単独HTML教材をそのまま登録できます。スマホやタブレットでも見やすい教材になるよう、説明や対象クラスも合わせて整えておくと便利です。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/teacher/materials" className="btn-secondary">
+              一覧へ戻る
+            </Link>
+            <button type="button" className="btn-primary" disabled={busy} onClick={onSubmit}>
+              {busy ? "保存中..." : "教材を保存"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {err && <div className="surface-card border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{err}</div>}
+
+      <section className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.15fr)_380px]">
+        <div className="space-y-6">
+          <section className="surface-card p-5 sm:p-6">
+            <div className="mb-5 space-y-1">
+              <h2 className="text-lg font-semibold text-slate-900">基本情報</h2>
+              <p className="text-sm text-slate-500">タイトル、教科、単元など教材を探しやすくする情報です。</p>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <label>
+                <span className="field-label">タイトル</span>
+                <input className="field-input" value={form.title} onChange={(e) => setField("title", e.target.value)} placeholder="例：二次関数のグラフの変化" />
+              </label>
+              <label>
+                <span className="field-label">教科</span>
+                <select className="field-input" value={form.subject} onChange={(e) => setField("subject", e.target.value)}>
+                  {subjectOptions.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="field-label">単元</span>
+                <input className="field-input" value={form.unit_name} onChange={(e) => setField("unit_name", e.target.value)} placeholder="例：関数 / データの分析" />
+              </label>
+              <label>
+                <span className="field-label">学年</span>
+                <input className="field-input" value={form.grade_level} onChange={(e) => setField("grade_level", e.target.value)} placeholder="例：高1・中3" />
+              </label>
+            </div>
+            <label className="mt-4 block">
+              <span className="field-label">説明</span>
+              <textarea
+                className="field-input field-textarea"
+                value={form.description}
+                onChange={(e) => setField("description", e.target.value)}
+                placeholder="授業のどこで使う教材か、何を理解してほしいかを書いておくと便利です。"
+              />
+            </label>
+          </section>
+
+          <section className="surface-card p-5 sm:p-6">
+            <div className="mb-5 space-y-1">
+              <h2 className="text-lg font-semibold text-slate-900">公開設定</h2>
+              <p className="text-sm text-slate-500">表示方法と公開対象を選びます。</p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {materialTypeOptions.map((item) => {
+                const selected = form.material_type === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setField("material_type", item.value)}
+                    className={`rounded-3xl border px-4 py-4 text-left transition ${
+                      selected ? "border-emerald-300 bg-emerald-50 shadow-sm" : "border-slate-200 bg-white hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-slate-900">{item.label}</div>
+                    <div className="mt-1 text-xs leading-5 text-slate-500">{item.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-5 flex flex-wrap items-center gap-3 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600"
+                  checked={form.is_published}
+                  onChange={(e) => setField("is_published", e.target.checked)}
+                />
+                すぐに公開する
+              </label>
+              <span className="text-xs text-slate-500">未公開のまま保存して、あとで内容を整えてから公開することもできます。</span>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              <div className="field-label mb-0">公開対象クラス</div>
+              <div className="flex flex-wrap gap-2">
+                {classIds.length === 0 ? (
+                  <div className="text-sm text-slate-500">クラス情報がまだありません。未選択のままなら全体公開になります。</div>
+                ) : (
+                  classIds.map((classId) => {
+                    const selected = form.class_ids.includes(classId);
+                    return (
+                      <button
+                        key={classId}
+                        type="button"
+                        onClick={() => toggleClass(classId)}
+                        className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+                          selected ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        {classId}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="surface-card p-5 sm:p-6">
+            <div className="mb-5 space-y-1">
+              <h2 className="text-lg font-semibold text-slate-900">教材データ</h2>
+              <p className="text-sm text-slate-500">ファイルを直接アップロードするか、URLを入力してください。</p>
+            </div>
+
+            {form.material_type === "image" && (
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <FileUploadBox title="画像ファイルをアップロード" description="PNG / JPG / WebP などに対応" accept="image/*" onChange={(file) => onUpload("image", file)} />
+                <FileUploadBox title="サムネイル画像" description="一覧で見やすくする小さな画像" accept="image/*" onChange={(file) => onUpload("thumb", file)} />
+              </div>
+            )}
+
+            {form.material_type === "video" && (
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <FileUploadBox title="動画ファイルをアップロード" description="mp4 / webm / ogg を想定" accept="video/mp4,video/webm,video/ogg" onChange={(file) => onUpload("video", file)} />
+                <FileUploadBox title="サムネイル画像" description="動画一覧で見やすくする表紙画像" accept="image/*" onChange={(file) => onUpload("thumb", file)} />
+              </div>
+            )}
+
+            {form.material_type === "app" && (
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <FileUploadBox title="単独HTML教材" description="JS/CSS を1つにまとめたHTMLファイル" accept=".html,.htm,text/html" onChange={(file) => onUpload("app", file)} />
+                <FileUploadBox title="サムネイル画像" description="教材カードに表示する表紙画像" accept="image/*" onChange={(file) => onUpload("thumb", file)} />
+              </div>
+            )}
+
+            {form.material_type !== "interactive" && (
+              <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <label>
+                  <span className="field-label">教材URL</span>
+                  <input className="field-input" value={form.content_url} onChange={(e) => setField("content_url", e.target.value)} placeholder="アップロード後は自動入力されます" />
+                </label>
+                <label>
+                  <span className="field-label">サムネイルURL</span>
+                  <input className="field-input" value={form.thumbnail_url} onChange={(e) => setField("thumbnail_url", e.target.value)} placeholder="必要な場合のみ設定" />
+                </label>
+              </div>
+            )}
+
+            {form.material_type === "interactive" && (
+              <div className="space-y-4">
+                <label>
+                  <span className="field-label">インタラクティブ種別</span>
+                  <select
+                    className="field-input"
+                    value={form.interactive_kind}
+                    onChange={(e) => {
+                      const next = e.target.value as InteractiveKind;
+                      setForm((prev) => ({ ...prev, interactive_kind: next, interactive_config_text: defaultConfigByKind[next] }));
+                    }}
+                  >
+                    <option value="linear">一次関数</option>
+                    <option value="parabola">二次関数</option>
+                    <option value="bars">棒グラフ</option>
+                  </select>
+                </label>
+                <label>
+                  <span className="field-label">設定JSON</span>
+                  <textarea
+                    className="field-input min-h-64 font-mono text-xs"
+                    value={form.interactive_config_text}
+                    onChange={(e) => setField("interactive_config_text", e.target.value)}
+                  />
+                </label>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
+          <div className="space-y-3">
+            <h2 className="page-title text-xl sm:text-2xl">プレビュー</h2>
+            <p className="page-subtitle">生徒に見える見た目を確認しながら調整できます。</p>
+          </div>
+          <div className="surface-card overflow-hidden">
+            <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4">
+              <div className="flex flex-wrap gap-2">
+                <span className="chip">{selectedSubjectLabel}</span>
+                {form.grade_level ? <span className="chip">{form.grade_level}</span> : null}
+                {selectedTypeMeta ? <span className="chip">{selectedTypeMeta.label}</span> : null}
+                <span className={`chip ${form.is_published ? "border-emerald-200 bg-emerald-50 text-emerald-700" : ""}`}>{form.is_published ? "公開中" : "非公開"}</span>
+              </div>
+            </div>
+            <div className="space-y-4 p-5">
+              <div>
+                <div className="text-xl font-semibold text-slate-900">{previewRow.title}</div>
+                <div className="mt-2 text-sm leading-6 text-slate-600">{previewRow.description || "説明はまだ入力されていません。"}</div>
+              </div>
+              <MaterialPreview material={previewRow} />
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
+                <div>単元: {form.unit_name || "未設定"}</div>
+                <div>対象クラス: {form.class_ids.length ? form.class_ids.join(" / ") : "全体公開"}</div>
+              </div>
+            </div>
+          </div>
+        </aside>
       </section>
     </main>
   );

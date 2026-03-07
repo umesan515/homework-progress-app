@@ -55,32 +55,74 @@ export default function StudentMaterialsPage() {
       const okType = typeFilter === "all" ? true : row.material_type === typeFilter;
       if (!okType) return false;
       if (!needle) return true;
-      return [row.title, row.description ?? "", row.unit_name ?? "", row.grade_level ?? ""].join(" ").toLowerCase().includes(needle);
+      return [row.title, row.description ?? "", row.unit_name ?? "", row.grade_level ?? "", row.subject ?? ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle);
     });
   }, [rows, q, typeFilter]);
 
   return (
-    <main className="p-6 space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-xl font-semibold">教材置き場</h1>
-        <div className="text-sm text-gray-600">授業の補助教材を自由に閲覧できます。</div>
-      </div>
-      <section className="rounded-2xl border bg-gray-50 p-4 space-y-3">
-        <div className="flex flex-col md:flex-row gap-3 md:items-center">
-          <input className="rounded-lg border px-3 py-2 min-w-[240px]" value={q} onChange={(e) => setQ(e.target.value)} placeholder="教材を検索" />
-          <select className="rounded-lg border px-3 py-2" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}><option value="all">全種別</option><option value="image">画像</option><option value="video">動画</option><option value="interactive">インタラクティブ</option><option value="app">アプリ</option></select>
+    <main className="app-shell px-0 py-6 sm:py-8">
+      <div className="page-stack">
+        <div className="space-y-2">
+          <h1 className="page-title">教材置き場</h1>
+          <p className="page-subtitle">授業の補助教材を自由に閲覧できます。スマホでは1列、タブレット以上では見やすいカード配置になります。</p>
         </div>
-        {err && <div className="text-sm text-red-600 whitespace-pre-wrap">{err}</div>}
-      </section>
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {filtered.map((row) => (
-          <Link key={row.id} href={`/student/materials/${encodeURIComponent(row.id)}`} className="rounded-2xl border bg-white overflow-hidden hover:bg-gray-50 hover:shadow-sm transition">
-            <div className="aspect-[16/9] bg-gray-100 flex items-center justify-center overflow-hidden">{row.thumbnail_url ? <img src={thumb(row.thumbnail_url)} alt={row.title} className="w-full h-full object-cover" /> : <div className="text-sm text-gray-500">{typeLabel[row.material_type]}</div>}</div>
-            <div className="p-4 space-y-2"><div className="text-lg font-semibold line-clamp-2">{row.title}</div><div className="text-sm text-gray-600 line-clamp-2">{row.description || "説明なし"}</div><div className="flex flex-wrap gap-2 text-xs text-gray-600"><span className="rounded-full bg-gray-100 px-2 py-1">{typeLabel[row.material_type] ?? row.material_type}</span>{row.unit_name && <span className="rounded-full bg-gray-100 px-2 py-1">{row.unit_name}</span>}{row.grade_level && <span className="rounded-full bg-gray-100 px-2 py-1">{row.grade_level}</span>}</div></div>
-          </Link>
-        ))}
-        {filtered.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-gray-500">閲覧可能な教材はまだありません。</div>}
-      </section>
+
+        <section className="space-y-3">
+          <h2 className="section-title">検索と絞り込み</h2>
+          <div className="surface-muted p-4 sm:p-5">
+            <div className="grid gap-3 md:grid-cols-[1fr_220px]">
+              <input className="form-control" value={q} onChange={(e) => setQ(e.target.value)} placeholder="教材名・単元・学年で検索" />
+              <select className="form-control" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="all">全種別</option>
+                <option value="image">画像</option>
+                <option value="video">動画</option>
+                <option value="interactive">インタラクティブ</option>
+                <option value="app">アプリ</option>
+              </select>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+              <span className="badge-soft">表示件数 {filtered.length}</span>
+            </div>
+            {err && <div className="mt-3 text-sm text-rose-600 whitespace-pre-wrap">{err}</div>}
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="section-title">公開教材</h2>
+          {filtered.length === 0 ? (
+            <div className="empty-state">閲覧可能な教材はまだありません。</div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {filtered.map((row) => (
+                <Link key={row.id} href={`/student/materials/${encodeURIComponent(row.id)}`} className="action-card overflow-hidden p-0">
+                  <div className="aspect-[16/10] bg-slate-100">
+                    {row.thumbnail_url ? (
+                      <img src={thumb(row.thumbnail_url)} alt={row.title} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-sm font-medium text-slate-500">{typeLabel[row.material_type]}</div>
+                    )}
+                  </div>
+                  <div className="p-4 sm:p-5">
+                    <div className="flex flex-wrap gap-2">
+                      <span className="badge">{typeLabel[row.material_type] ?? row.material_type}</span>
+                      {row.subject && <span className="badge-soft">{row.subject}</span>}
+                    </div>
+                    <div className="mt-3 line-clamp-2 text-lg font-semibold text-slate-900">{row.title}</div>
+                    <div className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{row.description || "説明はまだありません。"}</div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {row.unit_name && <span className="badge-soft">{row.unit_name}</span>}
+                      {row.grade_level && <span className="badge-soft">{row.grade_level}</span>}
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   );
 }

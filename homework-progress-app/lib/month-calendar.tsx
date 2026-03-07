@@ -152,7 +152,7 @@ export function MonthCalendar(props: {
   const selectedEvents = eventsByDate.get(selectedDay) ?? [];
 
   return (
-    <div className="rounded-2xl bg-gray-50 p-4 space-y-3">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-sm">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           {!props.headingOutside && (
@@ -165,14 +165,14 @@ export function MonthCalendar(props: {
 
         <div className="flex items-center gap-2">
           <button
-            className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition"
+            className="ui-button"
             onClick={() => setView(addMonths(view.y, view.m0, -1))}
             aria-label="前の月"
           >
             ＜
           </button>
           <button
-            className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition"
+            className="ui-button"
             onClick={() => {
               const now = new Date();
               setView({ y: now.getFullYear(), m0: now.getMonth() });
@@ -182,7 +182,7 @@ export function MonthCalendar(props: {
             今月
           </button>
           <button
-            className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition"
+            className="ui-button"
             onClick={() => setView(addMonths(view.y, view.m0, +1))}
             aria-label="次の月"
           >

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiDelete, apiGet } from "@/lib/api";
+import { apiDelete, apiGet, API_BASE } from "@/lib/api";
 import { getUserFromToken, logout } from "@/lib/auth";
 import type { MaterialRow } from "@/lib/types";
 
@@ -23,6 +23,12 @@ const typeLabel: Record<string, string> = {
   interactive: "インタラクティブ",
   app: "アプリ",
 };
+
+function thumb(url: string | null | undefined) {
+  if (!url) return "";
+  if (url.startsWith("http")) return url;
+  return `${API_BASE}${url}`;
+}
 
 export default function TeacherMaterialsPage() {
   const router = useRouter();
@@ -91,58 +97,106 @@ export default function TeacherMaterialsPage() {
   };
 
   return (
-    <main className="p-6 space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-xl font-semibold">教材置き場管理</h1>
-        <div className="text-sm text-gray-600">図・動画・単独HTML教材・インタラクティブ教材を登録できます。</div>
-      </div>
+    <main className="app-shell px-0 py-6 sm:py-8">
+      <div className="page-stack">
+        <div className="space-y-2">
+          <h1 className="page-title">教材置き場管理</h1>
+          <p className="page-subtitle">図・動画・単独HTML教材・インタラクティブ教材を整理し、クラスへ公開できます。</p>
+        </div>
 
-      <section className="rounded-2xl bg-gray-50 p-4 space-y-4 border">
-        <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-          <div className="flex flex-col md:flex-row gap-3 md:items-center">
-            <input className="rounded-lg border px-3 py-2 min-w-[240px]" placeholder="タイトル・説明・単元などで検索" value={q} onChange={(e) => setQ(e.target.value)} />
-            <select className="rounded-lg border px-3 py-2" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="all">全種別</option>
-              <option value="image">画像</option>
-              <option value="video">動画</option>
-              <option value="interactive">インタラクティブ</option>
-              <option value="app">アプリ</option>
-            </select>
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="kpi-card">
+            <div className="kpi-label">登録教材数</div>
+            <div className="mt-2 kpi-value">{rows.length}</div>
+            <div className="mt-2 text-sm text-slate-600">教師側で管理している教材の合計です。</div>
           </div>
-          <Link href="/teacher/materials/new" className="rounded-lg border px-4 py-2 bg-white hover:bg-gray-100 hover:shadow-sm transition text-center">新規教材を追加</Link>
-        </div>
-        {err && <div className="text-sm text-red-600 whitespace-pre-wrap">{err}</div>}
-      </section>
+          <div className="kpi-card">
+            <div className="kpi-label">公開中</div>
+            <div className="mt-2 kpi-value">{rows.filter((row) => row.is_published).length}</div>
+            <div className="mt-2 text-sm text-slate-600">生徒が閲覧できる教材数です。</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">インタラクティブ教材</div>
+            <div className="mt-2 kpi-value">{rows.filter((row) => row.material_type === "interactive").length}</div>
+            <div className="mt-2 text-sm text-slate-600">グラフや操作型教材の件数です。</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">クラス指定あり</div>
+            <div className="mt-2 kpi-value">{rows.filter((row) => (row.class_ids ?? []).length > 0).length}</div>
+            <div className="mt-2 text-sm text-slate-600">公開対象が限定されている教材数です。</div>
+          </div>
+        </section>
 
-      <section className="space-y-3">
-        <div className="text-lg font-semibold text-gray-700">登録済み教材</div>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {filtered.map((row) => (
-            <article key={row.id} className="rounded-2xl border bg-white p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-1 min-w-0">
-                  <div className="text-lg font-semibold break-words">{row.title}</div>
-                  <div className="text-sm text-gray-600 break-words">{row.description || "説明なし"}</div>
+        <section className="space-y-3">
+          <h2 className="section-title">検索と操作</h2>
+          <div className="surface-muted p-4 sm:p-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="grid flex-1 gap-3 md:grid-cols-[1fr_220px]">
+                <input className="form-control" placeholder="タイトル・説明・単元・クラスで検索" value={q} onChange={(e) => setQ(e.target.value)} />
+                <select className="form-control" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="all">全種別</option>
+                  <option value="image">画像</option>
+                  <option value="video">動画</option>
+                  <option value="interactive">インタラクティブ</option>
+                  <option value="app">アプリ</option>
+                </select>
+              </div>
+              <Link href="/teacher/materials/new" className="btn-primary w-full lg:w-auto">教材を新規登録</Link>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-sm text-slate-500">
+              <span className="badge-soft">表示件数 {filtered.length}</span>
+            </div>
+            {err && <div className="mt-3 text-sm text-rose-600 whitespace-pre-wrap">{err}</div>}
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="section-title">教材一覧</h2>
+          {filtered.length === 0 ? (
+            <div className="empty-state">条件に合う教材はありません。</div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {filtered.map((row) => (
+                <div key={row.id} className="surface overflow-hidden">
+                  <div className="aspect-[16/10] bg-slate-100">
+                    {row.thumbnail_url ? (
+                      <img src={thumb(row.thumbnail_url)} alt={row.title} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-sm font-medium text-slate-500">{typeLabel[row.material_type]}</div>
+                    )}
+                  </div>
+                  <div className="space-y-4 p-4 sm:p-5">
+                    <div className="flex flex-wrap gap-2">
+                      <span className="badge">{typeLabel[row.material_type] ?? row.material_type}</span>
+                      <span className="badge-soft">{subjectLabel[row.subject] ?? row.subject}</span>
+                      <span className={row.is_published ? "badge" : "badge-soft"}>{row.is_published ? "公開中" : "非公開"}</span>
+                    </div>
+                    <div>
+                      <div className="line-clamp-2 text-lg font-semibold text-slate-900">{row.title}</div>
+                      <div className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{row.description || "説明はまだありません。"}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {row.unit_name && <span className="badge-soft">{row.unit_name}</span>}
+                      {row.grade_level && <span className="badge-soft">{row.grade_level}</span>}
+                      {(row.class_ids ?? []).map((cid) => (
+                        <span key={cid} className="badge-soft">{cid}</span>
+                      ))}
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Link href={`/teacher/materials/${encodeURIComponent(row.id)}/edit`} className="btn-secondary flex-1">
+                        編集
+                      </Link>
+                      <button onClick={() => onDelete(row.id)} className="btn-danger flex-1">
+                        削除
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className={`shrink-0 rounded-full px-3 py-1 text-xs ${row.is_published ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-700"}`}>{row.is_published ? "公開中" : "非公開"}</div>
-              </div>
-              <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-                <span className="rounded-full bg-gray-100 px-2 py-1">{typeLabel[row.material_type] ?? row.material_type}</span>
-                <span className="rounded-full bg-gray-100 px-2 py-1">{subjectLabel[row.subject] ?? row.subject}</span>
-                {row.unit_name && <span className="rounded-full bg-gray-100 px-2 py-1">{row.unit_name}</span>}
-                {row.grade_level && <span className="rounded-full bg-gray-100 px-2 py-1">{row.grade_level}</span>}
-                <span className="rounded-full bg-gray-100 px-2 py-1">対象: {(row.class_ids ?? []).length > 0 ? row.class_ids.join(", ") : "全体"}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Link href={`/student/materials/${encodeURIComponent(row.id)}`} className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition">閲覧</Link>
-                <Link href={`/teacher/materials/${encodeURIComponent(row.id)}/edit`} className="rounded-lg border px-3 py-2 hover:bg-gray-100 hover:shadow-sm transition">編集</Link>
-                <button className="rounded-lg border px-3 py-2 hover:bg-red-50 hover:border-red-300 transition" onClick={() => onDelete(row.id)}>削除</button>
-              </div>
-            </article>
-          ))}
-          {filtered.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-gray-500">教材はまだ登録されていません。</div>}
-        </div>
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   );
 }

@@ -206,17 +206,17 @@ export default function AppHeader() {
             </button>
 
             {menuOpen && (
-              <div className="absolute left-0 mt-2 w-64 rounded-xl border bg-white shadow-lg overflow-hidden text-gray-900">
+              <div className="absolute left-0 mt-2 w-72 rounded-2xl border border-slate-200 bg-white shadow-lg overflow-hidden text-gray-900">
                 <div className="px-3 py-2 text-xs text-gray-500 border-b">メニュー</div>
                 <div className="py-1">
                   {menuItems.map((it) => (
                     <Link
                       key={it.href}
                       href={it.href}
-                      className="block px-3 py-2 text-sm hover:bg-white/10"
+                      className="block px-4 py-3 text-sm hover:bg-slate-50 transition"
                       onClick={() => setMenuOpen(false)}
                     >
-                      <div className="font-medium">{it.label}</div>
+                      <div className="font-medium horizontal-label">{it.label}</div>
                       {it.desc && <div className="text-xs text-gray-500">{it.desc}</div>}
                     </Link>
                   ))}
@@ -225,14 +225,14 @@ export default function AppHeader() {
             )}
           </div>
 
-          <Link href={homeHref} className="font-semibold rounded-lg px-2 py-1 hover:bg-white/10 transition" title="ホーム">
+          <Link href={homeHref} className="font-semibold rounded-lg px-3 py-1.5 hover:bg-white/10 transition horizontal-label" title="ホーム">
             学習進捗管理アプリ
           </Link>
           {ready && user && (
-            <div className="hidden sm:flex items-center gap-2 text-xs text-gray-700">
-              <span className="rounded-full border px-2 py-1 bg-gray-50">{user.role === "teacher" ? "教師" : "生徒"}</span>
-              <span className="rounded-full border px-2 py-1 bg-gray-50">ID: {user.uid}</span>
-              {user.role === "student" && <span className="rounded-full border px-2 py-1 bg-gray-50">クラス: {classText}</span>}
+            <div className="hidden sm:flex items-center gap-2 text-xs text-white/95">
+              <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">{user.role === "teacher" ? "教師" : "生徒"}</span>
+              <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">ID: {user.uid}</span>
+              {user.role === "student" && <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">クラス: {classText}</span>}
             </div>
           )}
         </div>
