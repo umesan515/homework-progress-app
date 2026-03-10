@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { API_BASE, apiGet } from "@/lib/api";
 
@@ -58,7 +58,7 @@ function normalizeThreads(raw: any): ThreadRow[] {
       const id = toStr(t?.id ?? t?.thread_id ?? t?.threadId);
       if (!id) return null;
       const title = String(t?.title ?? t?.subject ?? "");
-      const status: any = t?.status === "closed" ? "closed" : "open";
+      const status: "open" | "closed" = t?.status === "closed" ? "closed" : "open";
       return {
         id,
         title,
@@ -75,7 +75,7 @@ function normalizeThreads(raw: any): ThreadRow[] {
     .filter(Boolean) as ThreadRow[];
 }
 
-export default function StudentQuestionsPage() {
+function StudentQuestionsPageInner() {
   const router = useRouter();
   const sp = useSearchParams();
 
@@ -109,16 +109,15 @@ export default function StudentQuestionsPage() {
     }
 
     // A: 問題（block）から来た場合はクエリでプリセット
-    const qBook = sp?.get("bookId") ?? "";
-    const qChap = sp?.get("chapterId") ?? "";
-    const qBlock = sp?.get("blockId") ?? "";
-    const qTitle = sp?.get("title") ?? "";
+    const qBook = sp.get("bookId") ?? "";
+    const qChap = sp.get("chapterId") ?? "";
+    const qBlock = sp.get("blockId") ?? "";
+    const qTitle = sp.get("title") ?? "";
     if (qBook) setBookId(qBook);
     if (qChap) setChapterId(qChap);
     if (qBlock) setBlockId(qBlock);
-    if (qTitle && !title) setTitle(qTitle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (qTitle) setTitle(qTitle);
+  }, [router, sp]);
 
   const canLoad = useMemo(() => !!user && user.role === "student", [user]);
 
@@ -162,29 +161,29 @@ export default function StudentQuestionsPage() {
     setErr(null);
     try {
       const fd = new FormData();
-fd.append("title", title.trim());
-fd.append("body", (body ?? "").toString());
-if (bookId.trim()) fd.append("bookId", bookId.trim());
-if (chapterId.trim()) fd.append("chapterId", chapterId.trim());
-if (blockId.trim()) fd.append("blockId", blockId.trim());
-if (imageFile) fd.append("image", imageFile);
+      fd.append("title", title.trim());
+      fd.append("body", (body ?? "").toString());
+      if (bookId.trim()) fd.append("bookId", bookId.trim());
+      if (chapterId.trim()) fd.append("chapterId", chapterId.trim());
+      if (blockId.trim()) fd.append("blockId", blockId.trim());
+      if (imageFile) fd.append("image", imageFile);
 
-const url = `${API_BASE}/student/questions`;
-const token = getToken();
-const res = await fetch(url, {
-  method: "POST",
-  headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  body: fd,
-});
-const r = await (async () => {
-  const ct = res.headers.get("content-type") ?? "";
-  const txt = await res.text();
-  if (!res.ok) throw new Error(`API ${res.status}: POST ${url}
+      const url = `${API_BASE}/student/questions`;
+      const token = getToken();
+      const res = await fetch(url, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const r = await (async () => {
+        const ct = res.headers.get("content-type") ?? "";
+        const txt = await res.text();
+        if (!res.ok) throw new Error(`API ${res.status}: POST ${url}
 --- response ---
 ${txt}`);
-  if (ct.includes("application/json")) return JSON.parse(txt || "{}");
-  return txt as any;
-})();
+        if (ct.includes("application/json")) return JSON.parse(txt || "{}");
+        return txt as any;
+      })();
 
       const tid = extractThreadId(r);
       if (!tid) {
@@ -229,47 +228,47 @@ ${txt}`);
 
       <div className="rounded-xl border bg-gray-50 p-4 space-y-3">
         <div className="text-sm font-semibold text-gray-800">新規質問</div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input
             className="rounded-lg border px-3 py-2"
-            placeholder="タイトル（例：例題3の解き方）"
+            placeholder="タイトル"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
+
           <div className="grid grid-cols-3 gap-2">
-            <input className="rounded-lg border px-3 py-2" placeholder="bookId（任意）" value={bookId} onChange={(e) => setBookId(e.target.value)} />
-            <input
-              className="rounded-lg border px-3 py-2"
-              placeholder="chapterId（任意）"
-              value={chapterId}
-              onChange={(e) => setChapterId(e.target.value)}
-            />
-            <input className="rounded-lg border px-3 py-2" placeholder="blockId（任意）" value={blockId} onChange={(e) => setBlockId(e.target.value)} />
+            <input className="rounded-lg border px-3 py-2" placeholder="bookId" value={bookId} onChange={(e) => setBookId(e.target.value)} />
+            <input className="rounded-lg border px-3 py-2" placeholder="chapterId" value={chapterId} onChange={(e) => setChapterId(e.target.value)} />
+            <input className="rounded-lg border px-3 py-2" placeholder="blockId" value={blockId} onChange={(e) => setBlockId(e.target.value)} />
           </div>
         </div>
+
         <textarea
           className="rounded-lg border px-3 py-2 min-h-[120px]"
-          placeholder="質問内容（どこまで分かったか／何が分からないか）"
+          placeholder="本文"
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
-<div className="flex items-center gap-3">
-  <input
-    type="file"
-    accept="image/*"
-    onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
-  />
-  {imageFile && <div className="text-xs text-gray-600">画像: {imageFile.name}</div>}
-  {imageFile && (
-    <button
-      type="button"
-      className="text-xs text-gray-600 underline"
-      onClick={() => setImageFile(null)}
-    >
-      画像を外す
-    </button>
-  )}
-</div>
+
+        <div className="flex items-center gap-3">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+          />
+          {imageFile && <div className="text-xs text-gray-600">画像: {imageFile.name}</div>}
+          {imageFile && (
+            <button
+              type="button"
+              className="text-xs text-gray-600 underline"
+              onClick={() => setImageFile(null)}
+            >
+              画像を外す
+            </button>
+          )}
+        </div>
+
         <div className="flex justify-end">
           <button className="rounded-lg bg-emerald-600 text-white px-4 py-2 disabled:opacity-50" onClick={createThread} disabled={busy}>
             {busy ? "送信中..." : "送信"}
@@ -344,5 +343,13 @@ ${txt}`);
         </div>
       </div>
     </div>
+  );
+}
+
+export default function StudentQuestionsPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <StudentQuestionsPageInner />
+    </Suspense>
   );
 }
