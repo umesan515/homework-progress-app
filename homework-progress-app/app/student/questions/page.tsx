@@ -4,7 +4,6 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { API_BASE, apiGet } from "@/lib/api";
-
 import { getToken, getUserFromToken, logout } from "@/lib/auth";
 
 type ThreadRow = {
@@ -21,7 +20,6 @@ type ThreadRow = {
 };
 
 type ThreadsResponse = { threads: any[] };
-
 type CreateResponseAny = any;
 
 function fmtDateTime(d: string | null | undefined) {
@@ -44,7 +42,8 @@ function toStr(v: any): string {
 
 function extractThreadId(r: CreateResponseAny): string {
   // 想定: { ok:true, threadId }
-  const direct = r?.threadId ?? r?.thread_id ?? r?.id ?? r?.thread?.id ?? r?.thread?.threadId;
+  const direct =
+    r?.threadId ?? r?.thread_id ?? r?.id ?? r?.thread?.id ?? r?.thread?.threadId;
   if (typeof direct === "string" && direct.trim()) return direct.trim();
   // まれに {thread:{...}} だけ返る場合
   if (typeof r?.thread === "string" && r.thread.trim()) return r.thread.trim();
@@ -52,13 +51,19 @@ function extractThreadId(r: CreateResponseAny): string {
 }
 
 function normalizeThreads(raw: any): ThreadRow[] {
-  const arr = Array.isArray(raw?.threads) ? raw.threads : Array.isArray(raw) ? raw : [];
+  const arr = Array.isArray(raw?.threads)
+    ? raw.threads
+    : Array.isArray(raw)
+      ? raw
+      : [];
+
   return arr
     .map((t: any) => {
       const id = toStr(t?.id ?? t?.thread_id ?? t?.threadId);
       if (!id) return null;
       const title = String(t?.title ?? t?.subject ?? "");
-      const status: "open" | "closed" = t?.status === "closed" ? "closed" : "open";
+      const status: "open" | "closed" =
+        t?.status === "closed" ? "closed" : "open";
       return {
         id,
         title,
@@ -85,7 +90,6 @@ function StudentQuestionsPageInner() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [threads, setThreads] = useState<ThreadRow[]>([]);
-
   const [status, setStatus] = useState<"open" | "closed" | "all">("open");
 
   const [title, setTitle] = useState("");
@@ -107,7 +111,6 @@ function StudentQuestionsPageInner() {
       router.replace("/teacher");
       return;
     }
-
     // A: 問題（block）から来た場合はクエリでプリセット
     const qBook = sp.get("bookId") ?? "";
     const qChap = sp.get("chapterId") ?? "";
@@ -130,7 +133,9 @@ function StudentQuestionsPageInner() {
       const r = await apiGet<ThreadsResponse>(`/student/questions${q}`);
       setThreads(normalizeThreads(r));
     } catch (e: unknown) {
-      const msg = String((e as { message?: unknown })?.message ?? "読み込みに失敗しました。");
+      const msg = String(
+        (e as { message?: unknown })?.message ?? "読み込みに失敗しました。"
+      );
       if (msg.includes("401")) {
         logout("student");
         router.replace("/login");
@@ -145,7 +150,6 @@ function StudentQuestionsPageInner() {
   useEffect(() => {
     if (!canLoad) return;
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canLoad, status]);
 
   const createThread = async () => {
@@ -175,12 +179,13 @@ function StudentQuestionsPageInner() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: fd,
       });
+
       const r = await (async () => {
         const ct = res.headers.get("content-type") ?? "";
         const txt = await res.text();
-        if (!res.ok) throw new Error(`API ${res.status}: POST ${url}
---- response ---
-${txt}`);
+        if (!res.ok) {
+          throw new Error(`API ${res.status}: POST ${url}\n--- response ---\n${txt}`);
+        }
         if (ct.includes("application/json")) return JSON.parse(txt || "{}");
         return txt as any;
       })();
@@ -200,7 +205,9 @@ ${txt}`);
 
       router.push(`/student/questions/${encodeURIComponent(tid)}`);
     } catch (e: unknown) {
-      const msg = String((e as { message?: unknown })?.message ?? "送信に失敗しました。");
+      const msg = String(
+        (e as { message?: unknown })?.message ?? "送信に失敗しました。"
+      );
       setErr(msg);
     } finally {
       setBusy(false);
@@ -218,13 +225,18 @@ ${txt}`);
           <div className="text-sm text-gray-600">先生への質問を送信できます。</div>
         </div>
         <div className="flex gap-2">
-          <Link className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50" href="/student">
+          <Link
+            className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50"
+            href="/student"
+          >
             戻る
           </Link>
         </div>
       </div>
 
-      {err && <div className="rounded-xl border bg-red-50 p-3 text-sm text-red-800">{err}</div>}
+      {err && (
+        <div className="rounded-xl border bg-red-50 p-3 text-sm text-red-800">{err}</div>
+      )}
 
       <div className="rounded-xl border bg-gray-50 p-4 space-y-3">
         <div className="text-sm font-semibold text-gray-800">新規質問</div>
@@ -238,14 +250,29 @@ ${txt}`);
           />
 
           <div className="grid grid-cols-3 gap-2">
-            <input className="rounded-lg border px-3 py-2" placeholder="bookId" value={bookId} onChange={(e) => setBookId(e.target.value)} />
-            <input className="rounded-lg border px-3 py-2" placeholder="chapterId" value={chapterId} onChange={(e) => setChapterId(e.target.value)} />
-            <input className="rounded-lg border px-3 py-2" placeholder="blockId" value={blockId} onChange={(e) => setBlockId(e.target.value)} />
+            <input
+              className="rounded-lg border px-3 py-2"
+              placeholder="bookId"
+              value={bookId}
+              onChange={(e) => setBookId(e.target.value)}
+            />
+            <input
+              className="rounded-lg border px-3 py-2"
+              placeholder="chapterId"
+              value={chapterId}
+              onChange={(e) => setChapterId(e.target.value)}
+            />
+            <input
+              className="rounded-lg border px-3 py-2"
+              placeholder="blockId"
+              value={blockId}
+              onChange={(e) => setBlockId(e.target.value)}
+            />
           </div>
         </div>
 
         <textarea
-          className="rounded-lg border px-3 py-2 min-h-[120px]"
+          className="rounded-lg border px-3 py-2 min-h-[120px] w-full"
           placeholder="本文"
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -270,7 +297,11 @@ ${txt}`);
         </div>
 
         <div className="flex justify-end">
-          <button className="rounded-lg bg-emerald-600 text-white px-4 py-2 disabled:opacity-50" onClick={createThread} disabled={busy}>
+          <button
+            className="rounded-lg bg-emerald-600 text-white px-4 py-2 disabled:opacity-50"
+            onClick={createThread}
+            disabled={busy}
+          >
             {busy ? "送信中..." : "送信"}
           </button>
         </div>
@@ -280,12 +311,20 @@ ${txt}`);
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="text-sm font-semibold text-gray-800">質問一覧</div>
           <div className="flex items-center gap-2">
-            <select className="rounded-lg border px-2 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)}>
+            <select
+              className="rounded-lg border px-2 py-2"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as "open" | "closed" | "all")}
+            >
               <option value="open">未解決</option>
               <option value="closed">解決済み</option>
               <option value="all">すべて</option>
             </select>
-            <button className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50" onClick={load} disabled={busy}>
+            <button
+              className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50"
+              onClick={load}
+              disabled={busy}
+            >
               {busy ? "更新中..." : "更新"}
             </button>
           </div>
@@ -317,20 +356,28 @@ ${txt}`);
                   </td>
                   <td className="p-3">
                     {t.status === "open" ? (
-                      <span className="rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 text-xs">未解決</span>
+                      <span className="rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 text-xs">
+                        未解決
+                      </span>
                     ) : (
-                      <span className="rounded-full bg-gray-100 text-gray-700 border px-2 py-0.5 text-xs">解決済み</span>
+                      <span className="rounded-full bg-gray-100 text-gray-700 border px-2 py-0.5 text-xs">
+                        解決済み
+                      </span>
                     )}
                   </td>
-                  <td className="p-3 text-gray-700">{fmtDateTime(t.last_message_at || t.updated_at || t.created_at)}</td>
+                  <td className="p-3 text-gray-700">
+                    {fmtDateTime(t.last_message_at || t.updated_at || t.created_at)}
+                  </td>
                   <td className="p-3">
-                    <Link className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50" href={`/student/questions/${encodeURIComponent(t.id)}`}>
+                    <Link
+                      className="rounded-lg border px-3 py-2 bg-white hover:bg-gray-50"
+                      href={`/student/questions/${encodeURIComponent(t.id)}`}
+                    >
                       開く
                     </Link>
                   </td>
                 </tr>
               ))}
-
               {!busy && threads.length === 0 && (
                 <tr className="border-t">
                   <td className="p-3 text-gray-600" colSpan={4}>
