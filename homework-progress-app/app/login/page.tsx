@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiPost } from "@/lib/api";
 import { getUserFromToken, setTokenForRole } from "@/lib/auth";
 
-export default function LoginPage() {
+function LoginPageInner() {
   const r = useRouter();
   const sp = useSearchParams();
 
@@ -16,15 +16,14 @@ export default function LoginPage() {
 
   // 既にログイン済みなら通常はホームへ（force=1 なら留まる）
   useEffect(() => {
-    const force = sp?.get("force") === "1";
+    const force = sp.get("force") === "1";
     if (force) return;
 
     const u = getUserFromToken();
     if (!u) return;
     if (u.role === "teacher") r.replace("/teacher");
     else r.replace("/student");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [r, sp]);
 
   const onLogin = async () => {
     setErr(null);
@@ -85,5 +84,13 @@ export default function LoginPage() {
         ※別タブでログイン画面を開く場合は <b>/login?force=1</b>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginPageInner />
+    </Suspense>
   );
 }
