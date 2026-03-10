@@ -21,6 +21,7 @@ function LoginPageInner() {
 
     const u = getUserFromToken();
     if (!u) return;
+
     if (u.role === "teacher") r.replace("/teacher");
     else r.replace("/student");
   }, [r, sp]);
@@ -28,6 +29,7 @@ function LoginPageInner() {
   const onLogin = async () => {
     setErr(null);
     setBusy(true);
+
     try {
       const res = await apiPost<{ ok: boolean; token: string; user: any }>(
         "/auth/login",
@@ -49,6 +51,7 @@ function LoginPageInner() {
   return (
     <main className="p-6 max-w-md mx-auto space-y-4">
       <h1 className="text-xl font-semibold">ログイン</h1>
+
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       <div className="space-y-2">
