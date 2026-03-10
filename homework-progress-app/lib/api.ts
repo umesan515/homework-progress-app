@@ -12,7 +12,7 @@ function resolveUrl(path: string) {
   return `${normBase}${path}`;
 }
 
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   const t = getToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
