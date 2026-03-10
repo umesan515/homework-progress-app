@@ -139,7 +139,7 @@ export default function TeacherHomePage() {
 
     const next: LocalEvent[] = [
       ...localTests,
-      { id: crypto.randomUUID(), date: localDate, title, kind: "test" },
+      { id: crypto.randomUUID(), date: localDate, title, kind: "test" as const },
     ].sort((a, b) => (a.date === b.date ? a.title.localeCompare(b.title, "ja") : a.date.localeCompare(b.date)));
 
     setLocalTests(next);
