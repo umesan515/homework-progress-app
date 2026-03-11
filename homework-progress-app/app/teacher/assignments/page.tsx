@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiGet } from "@/lib/api";
 import { getUserFromToken, logout } from "@/lib/auth";
@@ -44,7 +44,7 @@ const isValidId = (v: unknown): v is string => {
 
 type Filter = "all" | "open" | "stopped" | "closed" | "archived";
 
-export default function TeacherAssignmentsListPage() {
+function TeacherAssignmentsListPageInner() {
   const router = useRouter();
   const sp = useSearchParams();
 
@@ -233,5 +233,13 @@ export default function TeacherAssignmentsListPage() {
         {rows.length === 0 && !busy && !err && <div className="text-sm text-gray-600">該当する課題がありません。</div>}
       </div>
     </main>
+  );
+}
+
+export default function TeacherAssignmentsListPage() {
+  return (
+    <Suspense fallback={<main className="p-6">読み込み中...</main>}>
+      <TeacherAssignmentsListPageInner />
+    </Suspense>
   );
 }
