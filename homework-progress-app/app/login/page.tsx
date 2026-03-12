@@ -93,6 +93,7 @@ function LoginPageInner() {
         {requestedRole && (
           <div>現在は{requestedRole === "teacher" ? "教師" : "生徒"}としてログインします。</div>
         )}
+        <div>開発用アカウント: 教師 teacher1 / teachpass, 生徒 student01 / studpass</div>
         <div>※別タブでログイン画面を開く場合は <b>/login?force=1</b></div>
       </div>
     </main>

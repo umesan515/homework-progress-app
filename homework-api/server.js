@@ -242,6 +242,45 @@ function requireRole(role) {
   };
 }
 
+let __devAccountsReady = false;
+async function ensureDevAccounts() {
+  if (__devAccountsReady) return;
+
+  const teacherHash = await bcrypt.hash("teachpass", 12);
+  const studentHash = await bcrypt.hash("studpass", 12);
+
+  await pool.query(
+    `
+    INSERT INTO users (uid, role, class_id, display_name, login_id, password_hash)
+    VALUES
+      ('teacher1', 'teacher', NULL, 'teacher1', 'teacher1', $1),
+      ('student01', 'student', 'A', 'student01', 'student01', $2)
+    ON CONFLICT (uid)
+    DO UPDATE SET
+      role = EXCLUDED.role,
+      class_id = CASE
+        WHEN users.class_id IS NULL OR users.class_id = '' THEN EXCLUDED.class_id
+        ELSE users.class_id
+      END,
+      display_name = CASE
+        WHEN users.display_name IS NULL OR users.display_name = '' THEN EXCLUDED.display_name
+        ELSE users.display_name
+      END,
+      login_id = CASE
+        WHEN users.login_id IS NULL OR users.login_id = '' THEN EXCLUDED.login_id
+        ELSE users.login_id
+      END,
+      password_hash = CASE
+        WHEN users.password_hash IS NULL OR users.password_hash = '' THEN EXCLUDED.password_hash
+        ELSE users.password_hash
+      END
+    `,
+    [teacherHash, studentHash]
+  );
+
+  __devAccountsReady = true;
+}
+
 app.get("/health", async (_req, res) => {
   try {
     const r = await pool.query("SELECT 1 AS ok");
@@ -259,6 +298,8 @@ app.get("/health", async (_req, res) => {
  */
 app.post("/auth/login", async (req, res) => {
   try {
+    await ensureDevAccounts();
+
     const { loginId, password } = req.body ?? {};
     if (!loginId || !password) return res.status(400).json({ error: "missing_body" });
 

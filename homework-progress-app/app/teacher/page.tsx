@@ -114,7 +114,7 @@ export default function TeacherHomePage() {
     } catch (e: any) {
       const msg = String(e?.message ?? "読み込みエラー");
       if (msg.includes("401")) {
-        logout();
+        logout("teacher");
         router.replace("/login?role=teacher");
         return;
       }
