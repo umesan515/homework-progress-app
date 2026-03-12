@@ -83,7 +83,7 @@ export default function TeacherHomePage() {
     if (!ready) return;
 
     if (!user) {
-      router.replace("/login");
+      router.replace("/login?role=teacher");
       return;
     }
 
@@ -115,7 +115,7 @@ export default function TeacherHomePage() {
       const msg = String(e?.message ?? "読み込みエラー");
       if (msg.includes("401")) {
         logout();
-        router.replace("/login");
+        router.replace("/login?role=teacher");
         return;
       }
       setErr(msg);

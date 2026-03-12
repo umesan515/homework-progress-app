@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiPost } from "@/lib/api";
-import { getUserFromToken, setTokenForRole } from "@/lib/auth";
+import { getUserFromRoleToken, getUserFromToken, setTokenForRole } from "@/lib/auth";
 
 function LoginPageInner() {
   const r = useRouter();
@@ -14,17 +14,23 @@ function LoginPageInner() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既にログイン済みなら通常はホームへ（force=1 なら留まる）
+  const requestedRole =
+    sp.get("role") === "teacher" || sp.get("role") === "student"
+      ? (sp.get("role") as "teacher" | "student")
+      : null;
+
+  // role 指定時は、そのロールのトークンだけを見る。
+  // これにより、同じ端末で教師ログイン中でも生徒ログイン画面を開ける。
   useEffect(() => {
     const force = sp.get("force") === "1";
     if (force) return;
 
-    const u = getUserFromToken();
+    const u = requestedRole ? getUserFromRoleToken(requestedRole) : getUserFromToken();
     if (!u) return;
 
     if (u.role === "teacher") r.replace("/teacher");
     else r.replace("/student");
-  }, [r, sp]);
+  }, [r, sp, requestedRole]);
 
   const onLogin = async () => {
     setErr(null);
@@ -83,8 +89,11 @@ function LoginPageInner() {
         {busy ? "ログイン中..." : "ログイン"}
       </button>
 
-      <div className="text-xs text-gray-500">
-        ※別タブでログイン画面を開く場合は <b>/login?force=1</b>
+      <div className="text-xs text-gray-500 space-y-1">
+        {requestedRole && (
+          <div>現在は{requestedRole === "teacher" ? "教師" : "生徒"}としてログインします。</div>
+        )}
+        <div>※別タブでログイン画面を開く場合は <b>/login?force=1</b></div>
       </div>
     </main>
   );

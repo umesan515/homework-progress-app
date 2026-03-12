@@ -19,6 +19,34 @@ const base64UrlToJson = (b64url: string) => {
   return JSON.parse(str);
 };
 
+function parseJwtUser(token: string): JwtUser | null {
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+
+  try {
+    const p = base64UrlToJson(parts[1]);
+    const uid = String(p.uid ?? "");
+    const role = String(p.role ?? "");
+    const classId = p.classId != null ? String(p.classId) : null;
+    const exp = typeof p.exp === "number" ? p.exp : undefined;
+
+    if (!uid || (role !== "student" && role !== "teacher")) return null;
+    if (exp && exp * 1000 < Date.now()) return null;
+
+    return { uid, role: role as any, classId, exp };
+  } catch {
+    return null;
+  }
+}
+
+function getLegacyTokenForRole(role: "teacher" | "student") {
+  if (typeof window === "undefined") return null;
+  const legacy = window.localStorage.getItem(LEGACY_TOKEN_KEY);
+  if (!legacy) return null;
+  const parsed = parseJwtUser(legacy);
+  return parsed?.role === role ? legacy : null;
+}
+
 function roleKey(role: "teacher" | "student") {
   return role === "teacher" ? TOKEN_KEY_TEACHER : TOKEN_KEY_STUDENT;
 }
@@ -41,9 +69,13 @@ export const getTokenForRole = (role: "teacher" | "student") => {
   if (typeof window === "undefined") return null;
   const t = window.localStorage.getItem(roleKey(role));
   if (t) return t;
-  // 互換：旧キーしか無い場合の救済（最初の一回だけ）
-  const legacy = window.localStorage.getItem(LEGACY_TOKEN_KEY);
-  return legacy;
+  // 互換：旧キーしか無い場合でも、ロールが一致する時だけ救済する
+  return getLegacyTokenForRole(role);
+};
+
+export const getUserFromRoleToken = (role: "teacher" | "student"): JwtUser | null => {
+  const token = getTokenForRole(role);
+  return token ? parseJwtUser(token) : null;
 };
 
 /**
@@ -93,27 +125,9 @@ export const logout = (role?: "teacher" | "student") => {
   window.localStorage.removeItem(LEGACY_TOKEN_KEY);
 };
 
+
 export const getUserFromToken = (): JwtUser | null => {
   const t = getToken();
   if (!t) return null;
-
-  const parts = t.split(".");
-  if (parts.length < 2) return null;
-
-  try {
-    const p = base64UrlToJson(parts[1]);
-    const uid = String(p.uid ?? "");
-    const role = String(p.role ?? "");
-    const classId = p.classId != null ? String(p.classId) : null;
-    const exp = typeof p.exp === "number" ? p.exp : undefined;
-
-    if (!uid || (role !== "student" && role !== "teacher")) return null;
-
-    // exp チェック（期限切れなら無効）
-    if (exp && exp * 1000 < Date.now()) return null;
-
-    return { uid, role: role as any, classId, exp };
-  } catch {
-    return null;
-  }
+  return parseJwtUser(t);
 };

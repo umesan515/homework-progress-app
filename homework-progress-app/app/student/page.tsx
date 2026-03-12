@@ -78,7 +78,7 @@ export default function StudentHomePage() {
     if (!authChecked) return;
 
     if (!user) {
-      router.replace("/login");
+      router.replace("/login?role=student");
       return;
     }
     if (user.role !== "student") {
@@ -110,7 +110,7 @@ export default function StudentHomePage() {
       const msg = String(e?.message ?? "読み込みエラー");
       if (msg.includes("401")) {
         logout();
-        router.replace("/login");
+        router.replace("/login?role=student");
         return;
       }
       setErr(msg);

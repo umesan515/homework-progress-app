@@ -104,6 +104,28 @@ const dbConfig = process.env.DATABASE_URL
     };
 
 const pool = new Pool(dbConfig);
+async function tableAvailable(tableName) {
+  try {
+    const target = String(tableName || "").includes(".") ? String(tableName) : `public.${String(tableName)}`;
+    const r = await pool.query(`SELECT to_regclass($1) IS NOT NULL AS exists`, [target]);
+    return !!r.rows?.[0]?.exists;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function isMissingRelationError(e) {
+  return String(e?.code || "") === "42P01";
+}
+
+function isPermissionError(e) {
+  return String(e?.code || "") === "42501";
+}
+
+function isSafeSchemaError(e) {
+  return isMissingRelationError(e) || isPermissionError(e);
+}
+
 
 // =========================
 // DB: lightweight migrations (runtime safety)
@@ -305,7 +327,6 @@ app.get("/teacher/classes", requireAuth, requireRole("teacher"), async (_req, re
   try {
     const classSet = new Set();
 
-    // 生徒が所属するクラス
     const u = await pool.query(
       `SELECT DISTINCT class_id
        FROM users
@@ -314,16 +335,21 @@ app.get("/teacher/classes", requireAuth, requireRole("teacher"), async (_req, re
     );
     for (const row of u.rows) classSet.add(row.class_id);
 
-    // 課題配布済みクラス（assignment_classes）も拾う（生徒がいないクラスでも配布先として選べるように）
-    const a = await pool.query(
-      `SELECT DISTINCT class_id
-       FROM assignment_classes
-       WHERE class_id IS NOT NULL AND class_id <> ''
-       ORDER BY class_id`
-    );
-    for (const row of a.rows) classSet.add(row.class_id);
+    if (await tableAvailable("assignment_classes")) {
+      try {
+        const a = await pool.query(
+          `SELECT DISTINCT class_id
+           FROM assignment_classes
+           WHERE class_id IS NOT NULL AND class_id <> ''
+           ORDER BY class_id`
+        );
+        for (const row of a.rows) classSet.add(row.class_id);
+      } catch (e) {
+        if (!isSafeSchemaError(e)) throw e;
+        console.warn("[GET /teacher/classes] assignment_classes unavailable; users only fallback");
+      }
+    }
 
-    // ✅ 重要：フロントが扱いやすい「配列」で返す
     const classIds = Array.from(classSet).sort();
     return res.json(classIds.map((class_id) => ({ class_id })));
   } catch (e) {
@@ -337,6 +363,8 @@ app.get("/teacher/classes/summary", requireAuth, requireRole("teacher"), async (
     const classId = String(req.query.classId ?? "ALL");
     const limitRaw = Number(req.query.limit ?? 10);
     const limit = Math.max(1, Math.min(20, isFinite(limitRaw) ? limitRaw : 10));
+    const hasAssignmentClasses = await tableAvailable("assignment_classes");
+    const hasAssignmentProblems = await tableAvailable("assignment_problems");
 
     let students = [];
     if (classId === "ALL") {
@@ -359,69 +387,127 @@ app.get("/teacher/classes/summary", requireAuth, requireRole("teacher"), async (
     }
 
     let assignRows = [];
-    if (classId === "ALL") {
-      const r = await pool.query(
-        `
-        WITH cls AS (
-          SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
-          FROM assignment_classes
-          GROUP BY assignment_id
-        ),
-        tot AS (
-          SELECT assignment_id, COUNT(*)::int AS total
-          FROM assignment_problems
-          GROUP BY assignment_id
-        )
-        SELECT a.id, a.title, a.status, a.due_at, a.created_at,
-               COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
-               COALESCE(t.total,0)::int AS total
-        FROM assignments a
-        LEFT JOIN cls c ON c.assignment_id=a.id
-        LEFT JOIN tot t ON t.assignment_id=a.id
-        WHERE a.status='open'
-        ORDER BY a.created_at DESC
-        LIMIT $1
-        `,
-        [limit]
-      );
-      assignRows = r.rows;
-    } else {
-      const r = await pool.query(
-        `
-        WITH visible AS (
-          SELECT a.id, a.title, a.status, a.due_at, a.created_at
-          FROM assignments a
-          JOIN assignment_classes ac ON ac.assignment_id=a.id
-          WHERE a.status='open'
-            AND (ac.class_id=$1 OR ac.class_id='ALL')
-          GROUP BY a.id
-        ),
-        cls AS (
-          SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
-          FROM assignment_classes
-          GROUP BY assignment_id
-        ),
-        tot AS (
-          SELECT assignment_id, COUNT(*)::int AS total
-          FROM assignment_problems
-          GROUP BY assignment_id
-        )
-        SELECT v.id, v.title, v.status, v.due_at, v.created_at,
-               COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
-               COALESCE(t.total,0)::int AS total
-        FROM visible v
-        LEFT JOIN cls c ON c.assignment_id=v.id
-        LEFT JOIN tot t ON t.assignment_id=v.id
-        ORDER BY v.created_at DESC
-        LIMIT $2
-        `,
-        [classId, limit]
-      );
-      assignRows = r.rows;
+    try {
+      if (classId === "ALL") {
+        let sql = `SELECT a.id, a.title, a.status, a.due_at, a.created_at, ARRAY[]::text[] AS class_ids, 0::int AS total FROM assignments a WHERE a.status='open' ORDER BY a.created_at DESC LIMIT $1`;
+        if (hasAssignmentClasses && hasAssignmentProblems) {
+          sql = `
+            WITH cls AS (
+              SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+              FROM assignment_classes
+              GROUP BY assignment_id
+            ),
+            tot AS (
+              SELECT assignment_id, COUNT(*)::int AS total
+              FROM assignment_problems
+              GROUP BY assignment_id
+            )
+            SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+                   COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+                   COALESCE(t.total,0)::int AS total
+            FROM assignments a
+            LEFT JOIN cls c ON c.assignment_id=a.id
+            LEFT JOIN tot t ON t.assignment_id=a.id
+            WHERE a.status='open'
+            ORDER BY a.created_at DESC
+            LIMIT $1`;
+        } else if (hasAssignmentClasses) {
+          sql = `
+            WITH cls AS (
+              SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+              FROM assignment_classes
+              GROUP BY assignment_id
+            )
+            SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+                   COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+                   0::int AS total
+            FROM assignments a
+            LEFT JOIN cls c ON c.assignment_id=a.id
+            WHERE a.status='open'
+            ORDER BY a.created_at DESC
+            LIMIT $1`;
+        } else if (hasAssignmentProblems) {
+          sql = `
+            WITH tot AS (
+              SELECT assignment_id, COUNT(*)::int AS total
+              FROM assignment_problems
+              GROUP BY assignment_id
+            )
+            SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+                   ARRAY[]::text[] AS class_ids,
+                   COALESCE(t.total,0)::int AS total
+            FROM assignments a
+            LEFT JOIN tot t ON t.assignment_id=a.id
+            WHERE a.status='open'
+            ORDER BY a.created_at DESC
+            LIMIT $1`;
+        }
+        const r = await pool.query(sql, [limit]);
+        assignRows = r.rows;
+      } else {
+        if (!hasAssignmentClasses) {
+          return res.json({ classId, rows: [] });
+        }
+        let sql = `
+          WITH visible AS (
+            SELECT a.id, a.title, a.status, a.due_at, a.created_at
+            FROM assignments a
+            JOIN assignment_classes ac ON ac.assignment_id=a.id
+            WHERE a.status='open'
+              AND (ac.class_id=$1 OR ac.class_id='ALL')
+            GROUP BY a.id
+          ),
+          cls AS (
+            SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+            FROM assignment_classes
+            GROUP BY assignment_id
+          )
+          SELECT v.id, v.title, v.status, v.due_at, v.created_at,
+                 COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+                 0::int AS total
+          FROM visible v
+          LEFT JOIN cls c ON c.assignment_id=v.id
+          ORDER BY v.created_at DESC
+          LIMIT $2`;
+        if (hasAssignmentProblems) {
+          sql = `
+            WITH visible AS (
+              SELECT a.id, a.title, a.status, a.due_at, a.created_at
+              FROM assignments a
+              JOIN assignment_classes ac ON ac.assignment_id=a.id
+              WHERE a.status='open'
+                AND (ac.class_id=$1 OR ac.class_id='ALL')
+              GROUP BY a.id
+            ),
+            cls AS (
+              SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+              FROM assignment_classes
+              GROUP BY assignment_id
+            ),
+            tot AS (
+              SELECT assignment_id, COUNT(*)::int AS total
+              FROM assignment_problems
+              GROUP BY assignment_id
+            )
+            SELECT v.id, v.title, v.status, v.due_at, v.created_at,
+                   COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+                   COALESCE(t.total,0)::int AS total
+            FROM visible v
+            LEFT JOIN cls c ON c.assignment_id=v.id
+            LEFT JOIN tot t ON t.assignment_id=v.id
+            ORDER BY v.created_at DESC
+            LIMIT $2`;
+        }
+        const r = await pool.query(sql, [classId, limit]);
+        assignRows = r.rows;
+      }
+    } catch (e) {
+      if (!isSafeSchemaError(e)) throw e;
+      console.warn("[GET /teacher/classes/summary] assignment tables unavailable; empty fallback");
+      return res.json({ classId, rows: [] });
     }
 
     const allStudents = students;
-
     const filterStudentsForAssignment = (aClassIds) => {
       const cls = Array.isArray(aClassIds) ? aClassIds : [];
       if (cls.includes("ALL")) return allStudents;
@@ -432,78 +518,34 @@ app.get("/teacher/classes/summary", requireAuth, requireRole("teacher"), async (
     const out = [];
     for (const a of assignRows) {
       const total = Number(a.total ?? 0);
-      const targetStudents =
-        classId === "ALL" ? filterStudentsForAssignment(a.class_ids) : allStudents;
+      const targetStudents = classId === "ALL" ? filterStudentsForAssignment(a.class_ids) : allStudents;
       const uids = targetStudents.map((s) => s.uid);
-
-      if (uids.length === 0) {
-        out.push({
-          id: a.id,
-          title: a.title,
-          status: a.status,
-          due_at: a.due_at,
-          created_at: a.created_at,
-          class_ids: a.class_ids ?? [],
-          total,
-          students: 0,
-          started: 0,
-          completed: 0,
-          unstarted: 0,
-          avgPct: 0,
-          tag: null,
-        });
+      if (uids.length === 0 || total <= 0) {
+        out.push({ id: a.id, title: a.title, status: a.status, due_at: a.due_at, created_at: a.created_at, class_ids: a.class_ids ?? [], total, students: targetStudents.length, started: 0, completed: 0, unstarted: targetStudents.length, avgPct: 0, tag: null });
         continue;
       }
-
       const marks = await pool.query(
-        `
-        SELECT student_uid, COUNT(DISTINCT label)::int AS done
-        FROM submission_marks
-        WHERE assignment_id=$1 AND student_uid = ANY($2::text[])
-        GROUP BY student_uid
-        `,
+        `SELECT student_uid, COUNT(DISTINCT label)::int AS done
+         FROM submission_marks
+         WHERE assignment_id=$1 AND student_uid = ANY($2::text[])
+         GROUP BY student_uid`,
         [a.id, uids]
       );
-
       const doneMap = new Map(marks.rows.map((x) => [x.student_uid, Number(x.done ?? 0)]));
-
-      let started = 0;
-      let completed = 0;
-      let unstarted = 0;
-      let sumPct = 0;
-
+      let started = 0, completed = 0, unstarted = 0, sumPct = 0;
       for (const s of targetStudents) {
         const done = doneMap.get(s.uid) ?? 0;
         const doneC = total > 0 ? Math.min(done, total) : 0;
         const pct = total > 0 ? (doneC / total) * 100 : 0;
-
-        if (doneC === 0) unstarted++;
-        else started++;
-
+        if (doneC === 0) unstarted++; else started++;
         if (total > 0 && doneC === total) completed++;
         sumPct += pct;
       }
-
       const avgPct = targetStudents.length > 0 ? Math.round(sumPct / targetStudents.length) : 0;
-
-      out.push({
-        id: a.id,
-        title: a.title,
-        status: a.status,
-        due_at: a.due_at,
-        created_at: a.created_at,
-        class_ids: a.class_ids ?? [],
-        total,
-        students: targetStudents.length,
-        started,
-        completed,
-        unstarted,
-        avgPct: Math.max(0, Math.min(100, avgPct)),
-        tag: null,
-      });
+      out.push({ id: a.id, title: a.title, status: a.status, due_at: a.due_at, created_at: a.created_at, class_ids: a.class_ids ?? [], total, students: targetStudents.length, started, completed, unstarted, avgPct: Math.max(0, Math.min(100, avgPct)), tag: null });
     }
 
-    res.json({ classId, rows: out });
+    return res.json({ classId, rows: out });
   } catch (e) {
     console.error("[GET /teacher/classes/summary]", e);
     res.status(500).json({ error: "server_error" });
@@ -515,6 +557,15 @@ app.get("/teacher/classes/heatmap", requireAuth, requireRole("teacher"), async (
     const classId = String(req.query.classId ?? "");
     const limitRaw = Number(req.query.limit ?? 8);
     const limit = Math.max(1, Math.min(20, isFinite(limitRaw) ? limitRaw : 8));
+    const hasAssignmentClasses = await tableAvailable("assignment_classes");
+    const hasAssignmentProblems = await tableAvailable("assignment_problems");
+    if (!hasAssignmentProblems) {
+      if (classId === "ALL") return res.json({ classId: "ALL", classIds: [], assignments: [], heat: {}, unstarted: {} });
+      if (!classId) return res.status(400).json({ error: "class_required" });
+      const studs = await pool.query(`SELECT uid, class_id, COALESCE(display_name, uid) AS name FROM users WHERE role='student' AND class_id=$1 ORDER BY COALESCE(display_name, uid)`, [classId]);
+      const students = studs.rows.map((x) => ({ uid: x.uid, name: x.name, classId: x.class_id }));
+      return res.json({ classId, students, assignments: [], heat: {}, unstarted: {} });
+    }
 
     /**
      * classId === "ALL" のとき：
@@ -756,6 +807,10 @@ app.get("/teacher/classes/heatmap-all", requireAuth, requireRole("teacher"), asy
   try {
     const limitRaw = Number(req.query.limit ?? 8);
     const limit = Math.max(1, Math.min(20, isFinite(limitRaw) ? limitRaw : 8));
+    const hasAssignmentProblems = await tableAvailable("assignment_problems");
+    if (!hasAssignmentProblems) {
+      return res.json({ classIds: [], assignments: [], heat: {}, unstarted: {} });
+    }
 
     // クラス一覧（生徒が属するクラス）
     const cls = await pool.query(
@@ -883,6 +938,10 @@ app.get("/teacher/classes/heatmap-all", requireAuth, requireRole("teacher"), asy
 // 値：クラス内生徒の平均進捗％、未着手人数も返す
 app.get("/teacher/classes/heatmap-classes", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
+    const hasAssignmentProblems = await tableAvailable("assignment_problems");
+    if (!hasAssignmentProblems) {
+      return res.json({ classIds: [], assignments: [], heat: {}, unstarted: {} });
+    }
     const limitRaw = Number(req.query.limit ?? 8);
     const limit = Math.max(1, Math.min(12, Number.isFinite(limitRaw) ? limitRaw : 8)); // 全クラスは上限控えめ
 
@@ -1057,34 +1116,67 @@ app.get("/teacher/assignments", requireAuth, requireRole("teacher"), async (req,
     else if (q === "stopped") where = "WHERE a.status<>'open'";
     else if (q === "closed") where = "WHERE a.status='closed'";
     else if (q === "archived") where = "WHERE a.status='archived'";
-    else where = "";
 
-    const r = await pool.query(
-      `
-      WITH cls AS (
-        SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
-        FROM assignment_classes
-        GROUP BY assignment_id
-      ),
-      tot AS (
-        SELECT assignment_id, COUNT(*)::int AS total
-        FROM assignment_problems
-        GROUP BY assignment_id
-      )
-      SELECT
-        a.id, a.title, a.status, a.due_at, a.created_at,
-        COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
-        COALESCE(t.total, 0)::int AS total
-      FROM assignments a
-      LEFT JOIN cls c ON c.assignment_id = a.id
-      LEFT JOIN tot t ON t.assignment_id = a.id
-      ${where}
-      ORDER BY a.created_at DESC
-      `
-    );
+    const hasAssignmentClasses = await tableAvailable("assignment_classes");
+    const hasAssignmentProblems = await tableAvailable("assignment_problems");
+    let sql = `SELECT a.id, a.title, a.status, a.due_at, a.created_at, ARRAY[]::text[] AS class_ids, 0::int AS total FROM assignments a ${where} ORDER BY a.created_at DESC`;
+    if (hasAssignmentClasses && hasAssignmentProblems) {
+      sql = `
+        WITH cls AS (
+          SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+          FROM assignment_classes
+          GROUP BY assignment_id
+        ),
+        tot AS (
+          SELECT assignment_id, COUNT(*)::int AS total
+          FROM assignment_problems
+          GROUP BY assignment_id
+        )
+        SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+               COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+               COALESCE(t.total, 0)::int AS total
+        FROM assignments a
+        LEFT JOIN cls c ON c.assignment_id = a.id
+        LEFT JOIN tot t ON t.assignment_id = a.id
+        ${where}
+        ORDER BY a.created_at DESC`;
+    } else if (hasAssignmentClasses) {
+      sql = `
+        WITH cls AS (
+          SELECT assignment_id, array_agg(class_id ORDER BY class_id) AS class_ids
+          FROM assignment_classes
+          GROUP BY assignment_id
+        )
+        SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+               COALESCE(c.class_ids, ARRAY[]::text[]) AS class_ids,
+               0::int AS total
+        FROM assignments a
+        LEFT JOIN cls c ON c.assignment_id = a.id
+        ${where}
+        ORDER BY a.created_at DESC`;
+    } else if (hasAssignmentProblems) {
+      sql = `
+        WITH tot AS (
+          SELECT assignment_id, COUNT(*)::int AS total
+          FROM assignment_problems
+          GROUP BY assignment_id
+        )
+        SELECT a.id, a.title, a.status, a.due_at, a.created_at,
+               ARRAY[]::text[] AS class_ids,
+               COALESCE(t.total, 0)::int AS total
+        FROM assignments a
+        LEFT JOIN tot t ON t.assignment_id = a.id
+        ${where}
+        ORDER BY a.created_at DESC`;
+    }
 
+    const r = await pool.query(sql);
     res.json(r.rows);
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/assignments] assignment tables unavailable; empty fallback");
+      return res.json([]);
+    }
     console.error("[GET /teacher/assignments]", e);
     res.status(500).json({ error: "server_error" });
   }
@@ -2226,7 +2318,14 @@ app.delete("/teacher/books/:bookId", requireAuth, requireRole("teacher"), async 
 
 app.get("/teacher/books/:bookId", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
-    const bookId = String(req.params.bookId);
+    const bookId = String(req.params.bookId ?? "").trim();
+    if (!bookId || bookId === "undefined" || bookId === "null") {
+      return res.json({
+        book: { id: "", name: "問題集", collection_id: null, subject: "other" },
+        collection: null,
+        chapters: [],
+      });
+    }
     const b = await pool.query(`SELECT id, name FROM books WHERE id=$1`, [bookId]);
     if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
 
@@ -2251,6 +2350,14 @@ app.get("/teacher/books/:bookId", requireAuth, requireRole("teacher"), async (re
 
     res.json({ book: b.rows[0], chapters: c.rows });
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/books/:bookId] book tables unavailable; placeholder fallback");
+      return res.json({
+        book: { id: "", name: "問題集", collection_id: null, subject: "other" },
+        collection: null,
+        chapters: [],
+      });
+    }
     console.error("[GET /teacher/books/:bookId]", e);
     res.status(500).json({ error: "server_error" });
   }
@@ -2265,8 +2372,9 @@ app.get(
   requireRole("teacher"),
   async (req, res) => {
     try {
+      const bookId = String(req.params.bookId ?? "").trim();
+      if (!bookId || bookId === "undefined" || bookId === "null") return res.json({ classIds: [] });
       await ensureBookClassesTable();
-      const bookId = String(req.params.bookId);
 
       const b = await pool.query(`SELECT id FROM books WHERE id=$1`, [bookId]);
       if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
@@ -2280,6 +2388,10 @@ app.get(
       );
       return res.json({ classIds: r.rows.map((x) => x.class_id) });
     } catch (e) {
+      if (isSafeSchemaError(e)) {
+        console.warn("[GET /teacher/books/:bookId/classes] book_classes unavailable; empty fallback");
+        return res.json({ classIds: [] });
+      }
       console.error("[GET /teacher/books/:bookId/classes]", e);
       return res.status(500).json({ error: "server_error" });
     }
@@ -2446,7 +2558,8 @@ app.get(
 
 app.get("/teacher/books/:bookId/chapters", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
-    const bookId = String(req.params.bookId);
+    const bookId = String(req.params.bookId ?? "").trim();
+    if (!bookId || bookId === "undefined" || bookId === "null") return res.json({ chapters: [] });
     const b = await pool.query(`SELECT id FROM books WHERE id=$1`, [bookId]);
     if (b.rows.length === 0) return res.status(404).json({ error: "not_found" });
 
@@ -2471,6 +2584,10 @@ app.get("/teacher/books/:bookId/chapters", requireAuth, requireRole("teacher"), 
 
     return res.json({ chapters: c.rows });
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/books/:bookId/chapters] chapter tables unavailable; empty fallback");
+      return res.json({ chapters: [] });
+    }
     console.error("[GET /teacher/books/:bookId/chapters]", e);
     return res.status(500).json({ error: "server_error" });
   }
@@ -2847,6 +2964,10 @@ app.get("/teacher/templates", requireAuth, requireRole("teacher"), async (_req, 
     );
     res.json(r.rows);
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/templates] template tables unavailable; empty fallback");
+      return res.json([]);
+    }
     console.error("[GET /teacher/templates]", e);
     res.status(500).json({ error: "server_error" });
   }
@@ -3521,6 +3642,10 @@ app.get("/teacher/questions", requireAuth, requireRole("teacher"), async (req, r
     const r = await pool.query(sql, params);
     return res.json({ threads: r.rows });
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/questions] question tables unavailable; empty fallback");
+      return res.json({ threads: [] });
+    }
     console.error("[GET /teacher/questions]", e);
     return res.status(500).json({ error: "server_error" });
   }
@@ -3715,6 +3840,11 @@ app.delete("/teacher/questions/:threadId", requireAuth, requireRole("teacher"), 
 
 app.get("/teacher/notifications", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
+    const hasQuestionThreads = await tableAvailable("question_threads");
+    const hasQuestionMessages = await tableAvailable("question_messages");
+    if (!hasQuestionThreads || !hasQuestionMessages) {
+      return res.json({ notifications: [] });
+    }
     const sinceRaw = String(req.query?.since ?? "").trim();
     let since = null;
     if (sinceRaw) {
@@ -3758,6 +3888,10 @@ app.get("/teacher/notifications", requireAuth, requireRole("teacher"), async (re
 
     res.json({ notifications: q.rows ?? [] });
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /teacher/notifications] question tables unavailable; empty fallback");
+      return res.json({ notifications: [] });
+    }
     console.error("[GET /teacher/notifications]", e);
     res.status(500).json({ error: "server_error" });
   }
@@ -3774,7 +3908,7 @@ materialUploadHandler(materialImageUpload, "/teacher/materials/upload/image", "/
 materialUploadHandler(materialVideoUpload, "/teacher/materials/upload/video", "/uploads/materials/videos");
 materialUploadHandler(materialThumbUpload, "/teacher/materials/upload/thumb", "/uploads/materials/thumbs");
 materialUploadHandler(materialAppUpload, "/teacher/materials/upload/app", "/uploads/materials/apps");
-app.get("/teacher/materials", requireAuth, requireRole("teacher"), async (_req, res) => { try { res.json(await listTeacherMaterials()); } catch (e) { console.error("[GET /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } });
+app.get("/teacher/materials", requireAuth, requireRole("teacher"), async (_req, res) => { try { res.json(await listTeacherMaterials()); } catch (e) { if (isSafeSchemaError(e)) { console.warn("[GET /teacher/materials] material tables unavailable; empty fallback"); return res.json([]); } console.error("[GET /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } });
 app.get("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { try { await ensureMaterialsTables(); const row = await readMaterialById(pool, String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
 app.post("/teacher/materials", requireAuth, requireRole("teacher"), async (req, res) => { const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const id = newId("mat"); await client.query(`INSERT INTO materials (id, title, description, subject, unit_name, grade_level, material_type, content_url, thumbnail_url, interactive_kind, interactive_config, is_published, created_by, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished, req.user.uid]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[POST /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
 app.put("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { const id = String(req.params.id); const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const exists = await client.query(`SELECT id FROM materials WHERE id=$1`, [id]); if (exists.rows.length === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); } await client.query(`UPDATE materials SET title=$2, description=$3, subject=$4, unit_name=$5, grade_level=$6, material_type=$7, content_url=$8, thumbnail_url=$9, interactive_kind=$10, interactive_config=$11, is_published=$12, updated_at=now() WHERE id=$1`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished]); await client.query(`DELETE FROM material_class_targets WHERE material_id=$1`, [id]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[PUT /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
@@ -3866,6 +4000,10 @@ app.get("/calendar/tests", requireAuth, async (req, res) => {
     );
     res.json(r.rows);
   } catch (e) {
+    if (isSafeSchemaError(e)) {
+      console.warn("[GET /calendar/tests] test event tables unavailable; empty fallback");
+      return res.json([]);
+    }
     console.error("[GET /calendar/tests]", e);
     res.status(500).json({ error: "server_error" });
   }
