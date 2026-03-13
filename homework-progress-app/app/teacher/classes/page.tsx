@@ -8,7 +8,21 @@ import { getUserFromToken, logout } from "@/lib/auth";
 
 const ALL_CLASS_VALUE = "ALL";
 
-type ClassListResp = { classIds: string[] };
+type ClassRow = { class_id: string; student_count?: number };
+
+function normalizeClassRows(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return Array.from(new Set(payload.map((row) => {
+      if (typeof row === "string") return row.trim();
+      if (row && typeof row === "object" && "class_id" in row) return String((row as { class_id?: unknown }).class_id ?? "").trim();
+      return "";
+    }).filter(Boolean))).sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
+  }
+  if (payload && typeof payload === "object" && Array.isArray((payload as { classIds?: unknown }).classIds)) {
+    return Array.from(new Set(((payload as { classIds: unknown[] }).classIds ?? []).map((row) => String(row ?? "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
+  }
+  return [];
+}
 
 type SummaryRow = {
   id: string;
@@ -104,6 +118,7 @@ export default function TeacherClassesDashboardPage() {
 
   const [classIds, setClassIds] = useState<string[]>([]);
   const [selectedClass, setSelectedClass] = useState<string>(ALL_CLASS_VALUE);
+  const [selectedExtraClasses, setSelectedExtraClasses] = useState<string[]>([]);
 
   const [tab, setTab] = useState<"summary" | "heatmap" | "problems" | "books">("summary");
 
@@ -135,6 +150,29 @@ export default function TeacherClassesDashboardPage() {
   const [busyBooks, setBusyBooks] = useState(false);
   const [classBooks, setClassBooks] = useState<BookRow[]>([]);
 
+  const effectiveSelectedClassIds = useMemo(() => {
+    if (selectedClass === ALL_CLASS_VALUE) return [] as string[];
+    return Array.from(new Set([selectedClass, ...selectedExtraClasses].filter((c) => c && c !== ALL_CLASS_VALUE))).sort((a, b) =>
+      a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" })
+    );
+  }, [selectedClass, selectedExtraClasses]);
+
+  const selectedSingleClass = effectiveSelectedClassIds.length === 1 ? effectiveSelectedClassIds[0] : "";
+  const isAllClassesSelected = effectiveSelectedClassIds.length === 0;
+  const isMultiClassesSelected = effectiveSelectedClassIds.length > 1;
+  const selectedScopeLabel = isAllClassesSelected
+    ? "全クラス（合算）"
+    : effectiveSelectedClassIds.join(", ");
+
+  const toggleExtraClass = (classId: string) => {
+    if (!classId || classId === ALL_CLASS_VALUE) return;
+    if (selectedClass === ALL_CLASS_VALUE) return;
+    if (classId === selectedClass) return;
+    setSelectedExtraClasses((prev) =>
+      prev.includes(classId) ? prev.filter((x) => x !== classId) : [...prev, classId].sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }))
+    );
+  };
+
   useEffect(() => {
     setMounted(true);
     const u = getUserFromToken();
@@ -152,10 +190,11 @@ export default function TeacherClassesDashboardPage() {
     // クラス一覧
     (async () => {
       setErr(null);
-      const r = await apiGet<ClassListResp>("/teacher/classes");
-      const list = (r?.classIds ?? []).slice().sort((a, b) => a.localeCompare(b, "ja"));
+      const r = await apiGet<unknown>("/teacher/classes");
+      const list = normalizeClassRows(r);
       setClassIds(list);
       setSelectedClass(ALL_CLASS_VALUE);
+      setSelectedExtraClasses([]);
     })().catch((e: unknown) => {
       const msg = String((e as { message?: unknown })?.message ?? "読み込みエラー");
       if (msg.includes("401")) {
@@ -176,9 +215,11 @@ export default function TeacherClassesDashboardPage() {
     setErr(null);
     setSummaryRows([]);
     try {
-      const r = await apiGet<SummaryResp>(
-        `/teacher/classes/summary?classId=${encodeURIComponent(selectedClass)}&limit=10`
-      );
+      const sp = new URLSearchParams();
+      if (effectiveSelectedClassIds.length > 1) sp.set("classIds", effectiveSelectedClassIds.join(","));
+      else sp.set("classId", selectedSingleClass || ALL_CLASS_VALUE);
+      sp.set("limit", "10");
+      const r = await apiGet<SummaryResp>(`/teacher/classes/summary?${sp.toString()}`);
       setSummaryRows(r?.rows ?? []);
     } catch (e: unknown) {
       const msg = String((e as { message?: unknown })?.message ?? "読み込みに失敗しました。");
@@ -205,16 +246,22 @@ export default function TeacherClassesDashboardPage() {
     try {
       const limit = clamp(heatN, 1, 20);
 
-      if (selectedClass === ALL_CLASS_VALUE) {
+      if (effectiveSelectedClassIds.length === 0) {
         const r = await apiGet<HeatmapAllResp>(`/teacher/classes/heatmap-all?limit=${encodeURIComponent(String(limit))}`);
         setHeatAllData(r);
         setHeatToast("全クラス（合算）：クラス別平均進捗を作成しました。");
-      } else {
+      } else if (effectiveSelectedClassIds.length === 1) {
         const r = await apiGet<HeatmapResp>(
-          `/teacher/classes/heatmap?classId=${encodeURIComponent(selectedClass)}&limit=${encodeURIComponent(String(limit))}`
+          `/teacher/classes/heatmap?classId=${encodeURIComponent(selectedSingleClass)}&limit=${encodeURIComponent(String(limit))}`
         );
         setHeatData(r);
-        setHeatToast(`${selectedClass}：生徒別進捗を作成しました。`);
+        setHeatToast(`${selectedSingleClass}：生徒別進捗を作成しました。`);
+      } else {
+        const r = await apiGet<HeatmapAllResp>(
+          `/teacher/classes/heatmap-all?classIds=${encodeURIComponent(effectiveSelectedClassIds.join(","))}&limit=${encodeURIComponent(String(limit))}`
+        );
+        setHeatAllData(r);
+        setHeatToast(`${selectedScopeLabel}：クラス別平均進捗を作成しました。`);
       }
     } catch (e: unknown) {
       const msg = String((e as { message?: unknown })?.message ?? "読み込みに失敗しました。");
@@ -238,12 +285,12 @@ export default function TeacherClassesDashboardPage() {
     setClassBooks([]);
 
     try {
-      if (selectedClass === ALL_CLASS_VALUE) {
-        setErr("『使用問題集』はクラスを選択して表示してください。");
+      if (effectiveSelectedClassIds.length !== 1) {
+        setErr("『使用問題集』は単一クラスを選択して表示してください。");
         return;
       }
 
-      const r = await apiGet<BookRow[]>(`/teacher/books?classId=${encodeURIComponent(selectedClass)}`);
+      const r = await apiGet<BookRow[]>(`/teacher/books?classId=${encodeURIComponent(selectedSingleClass)}`);
       setClassBooks(Array.isArray(r) ? r : []);
     } catch (e: unknown) {
       const msg = String((e as { message?: unknown })?.message ?? "読み込みに失敗しました。");
@@ -267,14 +314,11 @@ export default function TeacherClassesDashboardPage() {
     setProblemData(null);
 
     try {
-      // open課題全体を取得し、クラスで絞る（API追加を増やさないため）
-      const all = (await apiGet<TeacherAssignmentRow[]>(`/teacher/assignments?status=open`)) ?? [];
-      const visible =
-        selectedClass === ALL_CLASS_VALUE
-          ? all
-          : all.filter((a) => a.class_ids?.includes("ALL") || a.class_ids?.includes(selectedClass));
-
-      const list = visible.slice(0, clamp(probN, 1, 20));
+      const sp = new URLSearchParams();
+      sp.set("status", "open");
+      if (effectiveSelectedClassIds.length > 0) sp.set("classIds", effectiveSelectedClassIds.join(","));
+      const all = (await apiGet<TeacherAssignmentRow[]>(`/teacher/assignments?${sp.toString()}`)) ?? [];
+      const list = all.slice(0, clamp(probN, 1, 20));
       setProbAssignments(list);
       setSelectedAssignmentId(list[0]?.id ?? "");
     } catch (e: unknown) {
@@ -298,9 +342,11 @@ export default function TeacherClassesDashboardPage() {
     setErr(null);
     setProblemData(null);
     try {
-      const classId = selectedClass === ALL_CLASS_VALUE ? "ALL" : selectedClass;
+      const sp = new URLSearchParams();
+      if (effectiveSelectedClassIds.length > 1) sp.set("classIds", effectiveSelectedClassIds.join(","));
+      else sp.set("classId", selectedSingleClass || "ALL");
       const r = await apiGet<ByProblemResp>(
-        `/teacher/assignments/${encodeURIComponent(assignmentId)}/by-problem?classId=${encodeURIComponent(classId)}`
+        `/teacher/assignments/${encodeURIComponent(assignmentId)}/by-problem?${sp.toString()}`
       );
       setProblemData(r);
     } catch (e: unknown) {
@@ -321,7 +367,7 @@ export default function TeacherClassesDashboardPage() {
     if (!canLoad) return;
     loadSummary().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canLoad, selectedClass]);
+  }, [canLoad, selectedClass, selectedExtraClasses.join(",")]);
 
   // タブ切替時のロード
   useEffect(() => {
@@ -339,7 +385,7 @@ export default function TeacherClassesDashboardPage() {
     if (!selectedAssignmentId) return;
     loadProblemStats(selectedAssignmentId).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAssignmentId, selectedClass]);
+  }, [selectedAssignmentId, selectedClass, selectedExtraClasses.join(",")]);
 
   const selectedAssignment = useMemo(
     () => probAssignments.find((a) => a.id === selectedAssignmentId) ?? null,
@@ -414,7 +460,16 @@ export default function TeacherClassesDashboardPage() {
 
       <div className="flex items-center gap-2 flex-wrap">
         <div className="text-sm">対象：</div>
-        <select className="rounded-lg border px-3 py-2" value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)}>
+        <select
+          className="rounded-lg border px-3 py-2"
+          value={selectedClass}
+          onChange={(e) => {
+            const next = e.target.value;
+            setSelectedClass(next);
+            if (next === ALL_CLASS_VALUE) setSelectedExtraClasses([]);
+            else setSelectedExtraClasses((prev) => prev.filter((c) => c !== next));
+          }}
+        >
           <option value={ALL_CLASS_VALUE}>全クラス（合算）</option>
           {classIds.map((c) => (
             <option key={c} value={c}>
@@ -422,6 +477,8 @@ export default function TeacherClassesDashboardPage() {
             </option>
           ))}
         </select>
+
+        <div className="text-xs text-gray-600">現在：{selectedScopeLabel}</div>
 
         <div className="ml-3 flex gap-2">
           <button
@@ -468,8 +525,31 @@ export default function TeacherClassesDashboardPage() {
         </button>
 
         <div className="text-xs text-gray-500">
-          ※ ヒートマップ：全クラス（合算）は「クラス別平均進捗」、クラス選択時は「生徒別進捗」。
+          ※ ヒートマップ：全クラスまたは複数クラス選択では「クラス別平均進捗」、単一クラス選択では「生徒別進捗」。
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-sm">追加選択：</div>
+        {classIds.map((c) => {
+          const active = c === selectedClass || selectedExtraClasses.includes(c);
+          return (
+            <button
+              key={c}
+              type="button"
+              className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-gray-100" : "hover:bg-gray-50"} ${selectedClass === ALL_CLASS_VALUE && c !== selectedClass ? "opacity-50" : ""}`}
+              onClick={() => {
+                if (c === selectedClass) return;
+                toggleExtraClass(c);
+              }}
+              disabled={selectedClass === ALL_CLASS_VALUE}
+            >
+              {active ? "✓ " : ""}
+              {c}
+            </button>
+          );
+        })}
+        <div className="text-xs text-gray-500">※ プルダウンで主対象を選び、必要なクラスだけ追加できます。</div>
       </div>
 
       {/* ----------------- SUMMARY ----------------- */}
@@ -548,7 +628,7 @@ export default function TeacherClassesDashboardPage() {
               {busyBooks ? "読み込み中..." : "読み込む"}
             </button>
 
-            {selectedClass === ALL_CLASS_VALUE && <div className="text-sm text-gray-600">クラスを選択してください。</div>}
+            {effectiveSelectedClassIds.length !== 1 && <div className="text-sm text-gray-600">単一クラスを選択してください。</div>}
           </div>
 
           <div className="overflow-x-auto rounded-xl border">
@@ -579,8 +659,8 @@ export default function TeacherClassesDashboardPage() {
                 {!busyBooks && classBooks.length === 0 && (
                   <tr className="border-t">
                     <td className="p-3 text-gray-600" colSpan={3}>
-                      {selectedClass === ALL_CLASS_VALUE
-                        ? "クラスを選択してください。"
+                      {effectiveSelectedClassIds.length !== 1
+                        ? "単一クラスを選択してください。"
                         : "このクラスで使用中の問題集がありません。問題集詳細から『使用クラス』を登録してください。"}
                     </td>
                   </tr>
@@ -595,7 +675,7 @@ export default function TeacherClassesDashboardPage() {
       {tab === "heatmap" && (
         <div className="space-y-3">
           <div className="text-sm text-gray-700">
-            ※ 全クラス（合算）では「クラス別平均進捗」、クラス選択時は「生徒別進捗」を表示します。
+            ※ 全クラスまたは複数クラス選択では「クラス別平均進捗」、単一クラス選択時は「生徒別進捗」を表示します。
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -613,7 +693,7 @@ export default function TeacherClassesDashboardPage() {
               className="rounded-lg border px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
               disabled={busyHeat}
               onClick={loadHeatmap}
-              title={selectedClass === ALL_CLASS_VALUE ? "全クラス（合算）を作成" : "選択クラスを作成"}
+              title={effectiveSelectedClassIds.length === 1 ? "選択クラスを作成" : "選択範囲を作成"}
             >
               {busyHeat ? "作成中..." : "作成"}
             </button>
@@ -623,7 +703,7 @@ export default function TeacherClassesDashboardPage() {
 
           {busyHeat && <div className="text-sm text-gray-600">読み込み中...</div>}
 
-          {!busyHeat && selectedClass === ALL_CLASS_VALUE && (
+          {!busyHeat && effectiveSelectedClassIds.length !== 1 && (
             <>
               {heatAllData ? (
                 <div className="overflow-x-auto rounded-xl border">
@@ -678,7 +758,7 @@ export default function TeacherClassesDashboardPage() {
             </>
           )}
 
-          {!busyHeat && selectedClass !== ALL_CLASS_VALUE && (
+          {!busyHeat && effectiveSelectedClassIds.length === 1 && (
             <>
               {heatData ? (
                 <div className="overflow-x-auto rounded-xl border">
@@ -812,7 +892,7 @@ export default function TeacherClassesDashboardPage() {
                   <div className="text-sm">
                     対象人数：<b>{totalN}</b>
                     <span className="text-xs text-gray-500 ml-2">
-                      （{selectedClass === ALL_CLASS_VALUE ? "全クラス合算" : selectedClass}）
+                      （{selectedScopeLabel}）
                     </span>
                   </div>
 

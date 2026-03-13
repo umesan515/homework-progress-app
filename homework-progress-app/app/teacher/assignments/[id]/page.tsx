@@ -140,7 +140,8 @@ export default function TeacherAssignmentDetailPage() {
   // base
   const [err, setErr] = useState<string | null>(null);
   const [base, setBase] = useState<BaseResp | null>(null);
-  const [selectedClass, setSelectedClass] = useState<string>("");
+  const [selectedClass, setSelectedClass] = useState<string>(ALL_CLASS_VALUE);
+  const [selectedExtraClasses, setSelectedExtraClasses] = useState<string[]>([]);
 
   // tabs（URL ?tab=students|problems|manage）
   const initialTab = (() => {
@@ -213,8 +214,9 @@ export default function TeacherAssignmentDetailPage() {
 
     const cls = (b.classIds ?? []).filter((c) => c && c !== "ALL");
     const fromUrl = searchParams?.get("class") ?? "";
-    const init = (fromUrl && cls.includes(fromUrl) ? fromUrl : "") || cls[0] || ALL_CLASS_VALUE;
-    setSelectedClass((prev) => prev || init);
+    const init = (fromUrl && cls.includes(fromUrl) ? fromUrl : "") || ALL_CLASS_VALUE;
+    setSelectedClass((prev) => (prev && prev !== "undefined" ? prev : init));
+    setSelectedExtraClasses((prev) => prev.filter((c) => cls.includes(c)));
 
     setLabelText((prev) => (prev.trim() ? prev : (b.labels ?? []).join("\n")));
 
@@ -241,9 +243,28 @@ export default function TeacherAssignmentDetailPage() {
   const labels = base?.labels ?? [];
   const total = labels.length;
 
-  const loadStudents = async (classId: string) => {
+  const effectiveSelectedClassIds = useMemo(() => {
+    if (selectedClass === ALL_CLASS_VALUE) return [] as string[];
+    return Array.from(new Set([selectedClass, ...selectedExtraClasses].filter((c) => c && c !== ALL_CLASS_VALUE))).sort((a, b) =>
+      a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" })
+    );
+  }, [selectedClass, selectedExtraClasses]);
+
+  const selectedSingleClass = effectiveSelectedClassIds.length === 1 ? effectiveSelectedClassIds[0] : "";
+  const selectedScopeLabel = effectiveSelectedClassIds.length === 0 ? "全クラス（合算）" : effectiveSelectedClassIds.join(", ");
+
+  const toggleExtraClass = (classId: string) => {
+    if (!classId || classId === ALL_CLASS_VALUE) return;
+    if (selectedClass === ALL_CLASS_VALUE) return;
+    if (classId === selectedClass) return;
+    setSelectedExtraClasses((prev) =>
+      prev.includes(classId) ? prev.filter((x) => x !== classId) : [...prev, classId].sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }))
+    );
+  };
+
+  const loadStudents = async (classIds: string[]) => {
     if (!base) return;
-    if (!classId || classId === ALL_CLASS_VALUE) {
+    if (!classIds || classIds.length === 0 ||classIds.includes(ALL_CLASS_VALUE)) {
       setRows([]);
       return;
     }
@@ -253,8 +274,11 @@ export default function TeacherAssignmentDetailPage() {
     setOpenUid(null);
 
     try {
-      const r = await apiGet<{ students: StudentRowRaw[] }>(
-        `/teacher/assignments/${encodeURIComponent(assignmentId)}/students?classId=${encodeURIComponent(classId)}`
+      const sp = new URLSearchParams();
+      if (classIds.length > 1) sp.set("classIds", classIds.join(","));
+      else sp.set("classId", classIds[0] || "ALL");
+      const r = await apiGet<{ classIds?: string[]; students: StudentRowRaw[] }>(
+        `/teacher/assignments/${encodeURIComponent(assignmentId)}/students?${sp.toString()}`
       );
 
       const studs = (r.students ?? []).map((s) => {
@@ -307,15 +331,17 @@ export default function TeacherAssignmentDetailPage() {
     }
   };
 
-  const loadByProblem = async (classValue: string) => {
+  const loadByProblem = async (classIds: string[]) => {
     if (!base) return;
     setBusyProblem(true);
     setErr(null);
     setByProblem(null);
     try {
-      const classId = classValue === ALL_CLASS_VALUE ? "ALL" : classValue;
+      const sp = new URLSearchParams();
+      if (classIds.length > 1) sp.set("classIds", classIds.join(","));
+      else sp.set("classId", classIds[0] || "ALL");
       const r = await apiGet<ByProblemResp>(
-        `/teacher/assignments/${encodeURIComponent(assignmentId)}/by-problem?classId=${encodeURIComponent(classId)}`
+        `/teacher/assignments/${encodeURIComponent(assignmentId)}/by-problem?${sp.toString()}`
       );
       setByProblem(r);
     } catch (e: unknown) {
@@ -424,18 +450,17 @@ export default function TeacherAssignmentDetailPage() {
   // auto-load on tab
   useEffect(() => {
     if (!base) return;
-    if (!selectedClass) return;
 
     if (tab === "students") {
       if (labels.length === 0) return;
-      loadStudents(selectedClass).catch(() => {});
+      loadStudents(effectiveSelectedClassIds).catch(() => {});
     } else if (tab === "problems") {
-      loadByProblem(selectedClass).catch(() => {});
+      loadByProblem(effectiveSelectedClassIds).catch(() => {});
     } else if (tab === "manage") {
       // manageはbaseで十分（自動ロード不要）
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, selectedClass, base?.assignment?.id, labels.length]);
+  }, [tab, selectedClass, selectedExtraClasses.join(","), base?.assignment?.id, labels.length]);
 
   if (!mounted) return <main className="p-6">認証確認中...</main>;
   if (!user) return <main className="p-6">ログインへ遷移中...</main>;
@@ -475,7 +500,12 @@ export default function TeacherAssignmentDetailPage() {
         <select
           className="rounded-lg border px-3 py-2"
           value={selectedClass}
-          onChange={(e) => setSelectedClass(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            setSelectedClass(next);
+            if (next === ALL_CLASS_VALUE) setSelectedExtraClasses([]);
+            else setSelectedExtraClasses((prev) => prev.filter((c) => c !== next));
+          }}
         >
           <option value={ALL_CLASS_VALUE}>全クラス（合算）</option>
           {classOptions.map((c) => (
@@ -485,11 +515,13 @@ export default function TeacherAssignmentDetailPage() {
           ))}
         </select>
 
+        <div className="text-xs text-gray-600">現在：{selectedScopeLabel}</div>
+
         <button
           className="rounded-lg border px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
           onClick={() => {
-            if (tab === "students") loadStudents(selectedClass);
-            else if (tab === "problems") loadByProblem(selectedClass);
+            if (tab === "students") loadStudents(effectiveSelectedClassIds);
+            else if (tab === "problems") loadByProblem(effectiveSelectedClassIds);
             else loadBase();
           }}
           disabled={busy || busyProblem || savingLabels || busyManage}
@@ -518,7 +550,29 @@ export default function TeacherAssignmentDetailPage() {
           </button>
         </div>
 
-        <div className="text-xs text-gray-500">※「生徒別」は単一クラスのみ（全クラスは表示しません）。</div>
+        <div className="text-xs text-gray-500">※ 全クラス・単一クラス・複数クラスの切替ができます。</div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-sm">追加選択：</div>
+        {classOptions.map((c) => {
+          const active = c === selectedClass || selectedExtraClasses.includes(c);
+          return (
+            <button
+              key={c}
+              type="button"
+              className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-gray-100" : "hover:bg-gray-50"} ${selectedClass === ALL_CLASS_VALUE && c !== selectedClass ? "opacity-50" : ""}`}
+              onClick={() => {
+                if (c === selectedClass) return;
+                toggleExtraClass(c);
+              }}
+              disabled={selectedClass === ALL_CLASS_VALUE}
+            >
+              {active ? "✓ " : ""}
+              {c}
+            </button>
+          );
+        })}
       </div>
 
       {/* ======================== MANAGE ======================== */}
@@ -673,10 +727,6 @@ export default function TeacherAssignmentDetailPage() {
             <div className="rounded-xl border p-4 text-sm text-gray-700">
               この課題は問題ラベルが未登録です。先に「管理」タブで問題を登録してください。
             </div>
-          ) : selectedClass === ALL_CLASS_VALUE ? (
-            <div className="rounded-xl border p-4 text-sm text-gray-700">
-              「生徒別」はクラス単位で閲覧します。上の対象をクラスに切り替えてください。
-            </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-[980px] w-full text-sm">
@@ -779,7 +829,7 @@ export default function TeacherAssignmentDetailPage() {
               </div>
 
               <div className="text-sm text-gray-600">
-                対象生徒数：{byProblem?.n ?? 0}（{selectedClass === ALL_CLASS_VALUE ? "全クラス合算" : selectedClass}）
+                対象生徒数：{byProblem?.n ?? 0}（{selectedScopeLabel}）
               </div>
 
               {busyProblem && <div className="text-sm text-gray-600">読み込み中...</div>}
