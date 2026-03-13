@@ -26,8 +26,50 @@ type StudentRow = {
 
 type ClassResponse = ClassRow[];
 type StudentResponse = { students: StudentRow[] };
+type BulkCreateResponse = {
+  class_id: string;
+  created: Array<{ uid: string; class_id: string }>;
+  skipped: Array<{ loginId: string; error: string }>;
+};
+
+type BulkParsedRow = {
+  loginId: string;
+  displayName: string;
+};
 
 const ALL_CLASS = "ALL";
+
+function parseBulkStudents(text: string): BulkParsedRow[] {
+  const lines = text
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const rows: BulkParsedRow[] = [];
+  for (const line of lines) {
+    const cols = line
+      .replaceAll("，", ",")
+      .split(",")
+      .map((part) => part.trim());
+    const loginId = cols[0] ?? "";
+    const displayName = cols.slice(1).join(",").trim();
+    if (!loginId) continue;
+    rows.push({ loginId, displayName });
+  }
+  return rows;
+}
+
+function summarizeBulkResult(result: BulkCreateResponse): string {
+  const createdCount = result.created?.length ?? 0;
+  const skippedCount = result.skipped?.length ?? 0;
+  const head = `クラス ${result.class_id} に ${createdCount} 件登録しました。`;
+  if (skippedCount === 0) return head;
+  const detail = result.skipped
+    .slice(0, 5)
+    .map((row) => `${row.loginId || "(空欄)"}: ${row.error}`)
+    .join(" / ");
+  return `${head}\n未登録 ${skippedCount} 件: ${detail}`;
+}
 
 export default function TeacherStudentsPage() {
   const router = useRouter();
@@ -41,6 +83,7 @@ export default function TeacherStudentsPage() {
   const [classes, setClasses] = useState<ClassRow[]>([]);
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [selectedClass, setSelectedClass] = useState<string>(ALL_CLASS);
+  const [searchText, setSearchText] = useState("");
 
   const [newClassId, setNewClassId] = useState("");
   const [renameClassId, setRenameClassId] = useState("");
@@ -49,6 +92,10 @@ export default function TeacherStudentsPage() {
   const [createDisplayName, setCreateDisplayName] = useState("");
   const [createPassword, setCreatePassword] = useState("");
   const [createClassId, setCreateClassId] = useState("");
+
+  const [bulkClassId, setBulkClassId] = useState("");
+  const [bulkPassword, setBulkPassword] = useState("");
+  const [bulkText, setBulkText] = useState("");
 
   const [editingUid, setEditingUid] = useState<string | null>(null);
   const [editDisplayName, setEditDisplayName] = useState("");
@@ -113,14 +160,32 @@ export default function TeacherStudentsPage() {
     if (selectedClass !== ALL_CLASS) {
       setRenameClassId(selectedClass);
       if (!createClassId) setCreateClassId(selectedClass);
+      if (!bulkClassId) setBulkClassId(selectedClass);
       if (!editClassId && editingUid) setEditClassId(selectedClass);
     }
-  }, [createClassId, editClassId, editingUid, selectedClass]);
+  }, [bulkClassId, createClassId, editClassId, editingUid, selectedClass]);
+
+  const normalizedSearch = searchText.trim().toLowerCase();
 
   const filteredStudents = useMemo(() => {
-    if (selectedClass === ALL_CLASS) return students;
-    return students.filter((row) => String(row.class_id ?? "") === selectedClass);
-  }, [selectedClass, students]);
+    const byClass = selectedClass === ALL_CLASS ? students : students.filter((row) => String(row.class_id ?? "") === selectedClass);
+    if (!normalizedSearch) return byClass;
+    return byClass.filter((row) => {
+      const hay = [row.uid, row.login_id, row.display_name, row.class_id ?? ""].join(" ").toLowerCase();
+      return hay.includes(normalizedSearch);
+    });
+  }, [normalizedSearch, selectedClass, students]);
+
+  const bulkRows = useMemo(() => parseBulkStudents(bulkText), [bulkText]);
+  const duplicateBulkLoginIds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of bulkRows) {
+      counts.set(row.loginId, (counts.get(row.loginId) ?? 0) + 1);
+    }
+    return new Set(Array.from(counts.entries()).filter(([, count]) => count > 1).map(([loginId]) => loginId));
+  }, [bulkRows]);
+
+  const existingLoginIds = useMemo(() => new Set(students.map((row) => row.login_id)), [students]);
 
   const classCount = classes.length;
   const studentCount = students.length;
@@ -163,6 +228,7 @@ export default function TeacherStudentsPage() {
       setNewClassId("");
       setSelectedClass(classId);
       setCreateClassId(classId);
+      setBulkClassId(classId);
       setRenameClassId(classId);
       setOkMsg(`クラス ${classId} を登録しました。`);
       await load();
@@ -191,6 +257,7 @@ export default function TeacherStudentsPage() {
       await apiPut(`/teacher/classes/${encodeURIComponent(selectedClass)}`, { nextClassId });
       setSelectedClass(nextClassId);
       setCreateClassId(nextClassId);
+      setBulkClassId(nextClassId);
       setEditClassId(nextClassId);
       setOkMsg(`クラス名を ${selectedClass} から ${nextClassId} に変更しました。`);
       await load();
@@ -232,6 +299,42 @@ export default function TeacherStudentsPage() {
     }
   };
 
+  const submitBulkCreate = async () => {
+    const classId = bulkClassId.trim();
+    const password = bulkPassword;
+    if (!classId || !password) {
+      setErr("一括追加ではクラスと共通初期パスワードを入力してください。");
+      return;
+    }
+    if (bulkRows.length === 0) {
+      setErr("一括追加する生徒を1行以上入力してください。");
+      return;
+    }
+    if (duplicateBulkLoginIds.size > 0) {
+      setErr(`一括入力内で生徒IDが重複しています: ${Array.from(duplicateBulkLoginIds).join(", ")}`);
+      return;
+    }
+
+    setBusy(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      const result = await apiPost<BulkCreateResponse>("/teacher/students/bulk", {
+        classId,
+        password,
+        rows: bulkRows,
+      });
+      setOkMsg(summarizeBulkResult(result));
+      setBulkText("");
+      setSelectedClass(classId);
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message ?? "一括追加に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitEditStudent = async () => {
     if (!editingUid) return;
 
@@ -268,7 +371,7 @@ export default function TeacherStudentsPage() {
     <main className="page-shell">
       <div className="page-title-block">
         <h1 className="page-title">生徒管理</h1>
-        <p className="page-subtitle">クラス登録と生徒アカウントの追加・修正をここでまとめて行います。</p>
+        <p className="page-subtitle">クラスごとの生徒アカウント追加・編集・一覧確認をまとめて行います。</p>
         {err && <p className="text-sm text-rose-600 whitespace-pre-wrap">{err}</p>}
         {okMsg && <p className="text-sm text-emerald-700 whitespace-pre-wrap">{okMsg}</p>}
         {busy && <p className="text-sm text-slate-500">処理中...</p>}
@@ -277,7 +380,7 @@ export default function TeacherStudentsPage() {
       <section className="section-stack">
         <div>
           <h2 className="section-heading">現在の登録状況</h2>
-          <p className="section-caption">クラス数と生徒数を確認しながら、対象クラスを切り替えて管理できます。</p>
+          <p className="section-caption">対象クラスを切り替えながら、追加・編集・一覧確認を進められます。</p>
         </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="info-card">
@@ -293,16 +396,16 @@ export default function TeacherStudentsPage() {
           <div className="info-card">
             <div className="info-card-label">現在の表示対象</div>
             <div className="info-card-value text-2xl">{selectedClass === ALL_CLASS ? "全クラス" : selectedClass}</div>
-            <div className="info-card-sub">一覧と編集フォームはこの選択に合わせて切り替わります。</div>
+            <div className="info-card-sub">一覧・追加フォームはこの選択に合わせて使えます。</div>
           </div>
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+      <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
         <div className="section-stack">
           <div>
             <h2 className="section-heading">クラス管理</h2>
-            <p className="section-caption">1A、2-1 など学校の表記そのままで登録できます。</p>
+            <p className="section-caption">1A、2-1 など学校の表記そのままで登録・管理できます。</p>
           </div>
 
           <div className="soft-panel space-y-4">
@@ -377,12 +480,56 @@ export default function TeacherStudentsPage() {
         <div className="section-stack">
           <div>
             <h2 className="section-heading">生徒アカウント管理</h2>
-            <p className="section-caption">追加と修正を同じ画面で行い、クラスごとの一覧もすぐ確認できます。</p>
+            <p className="section-caption">クラス単位の一括追加、個別追加、既存アカウントの編集を同じ画面で進められます。</p>
           </div>
 
           <div className="soft-panel space-y-4">
             <div className="soft-panel-muted space-y-3">
-              <div className="text-sm font-bold text-slate-800">生徒アカウントを追加</div>
+              <div className="text-sm font-bold text-slate-800">クラス単位で一括追加</div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-700">対象クラス</label>
+                  <input className="form-input" value={bulkClassId} onChange={(e) => setBulkClassId(e.target.value)} placeholder="例: 1A" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-700">共通初期パスワード</label>
+                  <input
+                    className="form-input"
+                    type="password"
+                    value={bulkPassword}
+                    onChange={(e) => setBulkPassword(e.target.value)}
+                    placeholder="全員に設定する初期パスワード"
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm text-slate-700">生徒一覧（1行ごとに「生徒ID,表示名」）</label>
+                  <textarea
+                    className="form-input min-h-[160px]"
+                    value={bulkText}
+                    onChange={(e) => setBulkText(e.target.value)}
+                    placeholder={"例:\nstudent02,田中 太郎\nstudent03,佐藤 花子\nstudent04"}
+                  />
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                <div>入力行数: {bulkRows.length} 件</div>
+                <div>重複ID: {duplicateBulkLoginIds.size > 0 ? Array.from(duplicateBulkLoginIds).join(", ") : "なし"}</div>
+                <div>
+                  既存IDとの重複候補: {
+                    bulkRows
+                      .map((row) => row.loginId)
+                      .filter((loginId, index, arr) => arr.indexOf(loginId) === index && existingLoginIds.has(loginId))
+                      .join(", ") || "なし"
+                  }
+                </div>
+              </div>
+              <button className="subtle-button" onClick={submitBulkCreate} disabled={busy}>
+                一括追加を実行
+              </button>
+            </div>
+
+            <div className="soft-panel-muted space-y-3">
+              <div className="text-sm font-bold text-slate-800">生徒アカウントを個別追加</div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm text-slate-700">生徒ID</label>
@@ -413,7 +560,22 @@ export default function TeacherStudentsPage() {
             </div>
 
             <div className="soft-panel-muted space-y-3">
-              <div className="text-sm font-bold text-slate-800">生徒一覧</div>
+              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <div className="text-sm font-bold text-slate-800">生徒一覧</div>
+                  <div className="text-xs text-slate-500">表示対象のクラスと検索語に合わせて一覧を絞り込めます。</div>
+                </div>
+                <div className="w-full md:max-w-[320px] space-y-2">
+                  <label className="text-sm text-slate-700">検索</label>
+                  <input
+                    className="form-input"
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                    placeholder="生徒ID・表示名・クラスで検索"
+                  />
+                </div>
+              </div>
+
               {filteredStudents.length === 0 ? (
                 <div className="text-sm text-slate-600">該当する生徒はまだ登録されていません。</div>
               ) : (
