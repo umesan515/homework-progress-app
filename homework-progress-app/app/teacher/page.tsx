@@ -298,6 +298,11 @@ export default function TeacherHomePage() {
             <div className="home-action-card-desc">図、動画、補助教材を登録し、授業用ライブラリを整えます。</div>
             <span className="home-action-card-arrow">開く</span>
           </Link>
+          <Link className="home-action-card theme-slate" href="/teacher/students">
+            <div className="home-action-card-title">生徒管理</div>
+            <div className="home-action-card-desc">クラスごとの生徒登録、編集、一括追加をここで行います。</div>
+            <span className="home-action-card-arrow">開く</span>
+          </Link>
         </div>
       </section>
 

@@ -44,6 +44,8 @@ const isValidId = (v: unknown): v is string => {
 
 type Filter = "all" | "open" | "stopped" | "closed" | "archived";
 
+const ALL_CLASS_VALUE = "ALL";
+
 function TeacherAssignmentsListPageInner() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -61,6 +63,7 @@ function TeacherAssignmentsListPageInner() {
   const [rows, setRows] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [selectedClasses, setSelectedClasses] = useState<string[]>([ALL_CLASS_VALUE]);
 
   useEffect(() => {
     setMounted(true);
@@ -107,13 +110,29 @@ function TeacherAssignmentsListPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, user?.uid, filter]);
 
+  const classOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) {
+      for (const cid of r.class_ids ?? []) {
+        if (isValidId(cid)) set.add(cid);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ja"));
+  }, [rows]);
+
+  const visibleRows = useMemo(() => {
+    if (selectedClasses.includes(ALL_CLASS_VALUE)) return rows;
+    if (selectedClasses.length === 0) return [];
+    return rows.filter((r) => (r.class_ids ?? []).some((cid) => selectedClasses.includes(cid)));
+  }, [rows, selectedClasses]);
+
   const counts = useMemo(() => {
     let open = 0,
       stopped = 0,
       closed = 0,
       archived = 0,
       all = 0;
-    for (const r of rows) {
+    for (const r of visibleRows) {
       all++;
       if (r.status === "open") open++;
       else if (r.status === "closed") closed++;
@@ -121,12 +140,22 @@ function TeacherAssignmentsListPageInner() {
       if (r.status !== "open") stopped++;
     }
     return { all, open, stopped, closed, archived };
-  }, [rows]);
+  }, [visibleRows]);
 
   const setFilterAndUrl = (f: Filter) => {
     setFilter(f);
     const url = f === "all" ? "/teacher/assignments" : `/teacher/assignments?status=${f}`;
     router.replace(url);
+  };
+
+  const toggleClass = (cid: string) => {
+    setSelectedClasses((prev) => {
+      if (cid === ALL_CLASS_VALUE) return [ALL_CLASS_VALUE];
+      const next = prev.includes(ALL_CLASS_VALUE) ? [] : [...prev];
+      const has = next.includes(cid);
+      const updated = has ? next.filter((x) => x !== cid) : [...next, cid];
+      return updated.length === 0 ? [ALL_CLASS_VALUE] : updated;
+    });
   };
 
   if (!mounted) return <main className="p-6">読み込み中...</main>;
@@ -180,6 +209,22 @@ function TeacherAssignmentsListPageInner() {
         </button>
       </div>
 
+      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+        <div className="text-sm font-medium text-slate-800">対象クラス</div>
+        <div className="flex flex-wrap gap-2">
+          <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700">
+            <input type="checkbox" checked={selectedClasses.includes(ALL_CLASS_VALUE)} onChange={() => toggleClass(ALL_CLASS_VALUE)} />
+            全クラス
+          </label>
+          {classOptions.map((cid) => (
+            <label key={cid} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700">
+              <input type="checkbox" checked={selectedClasses.includes(cid)} onChange={() => toggleClass(cid)} />
+              {cid}
+            </label>
+          ))}
+        </div>
+      </div>
+
       {err && <p className="text-sm text-red-600">{err}</p>}
       {busy && <p className="text-sm text-gray-600">読み込み中...</p>}
 
@@ -188,7 +233,7 @@ function TeacherAssignmentsListPageInner() {
       </div>
 
       <div className="space-y-3">
-        {rows.map((r) => (
+        {visibleRows.map((r) => (
           <div key={r.id} className="rounded-xl border p-4 flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -230,7 +275,7 @@ function TeacherAssignmentsListPageInner() {
           </div>
         ))}
 
-        {rows.length === 0 && !busy && !err && <div className="text-sm text-gray-600">該当する課題がありません。</div>}
+        {visibleRows.length === 0 && !busy && !err && <div className="text-sm text-gray-600">該当する課題がありません。</div>}
       </div>
     </main>
   );
