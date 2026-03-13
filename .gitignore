@@ -3,3 +3,4 @@ _git_tmp2/
 **/node_modules/
 homework-api/uploads/
 homework-progress-app/.next/
+.env
