@@ -35,7 +35,7 @@ export default function TeacherTemplateDistributePage() {
 
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
-const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [tpl, setTpl] = useState<TemplateDetailResp["template"] | null>(null);
@@ -46,6 +46,7 @@ const [err, setErr] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
   const [dueDate, setDueDate] = useState<string>(""); // yyyy-mm-dd
+  const [classQuery, setClassQuery] = useState("");
 
   const [classesDebug, setClassesDebug] = useState<string>("");
 
@@ -124,6 +125,28 @@ const [err, setErr] = useState<string | null>(null);
     });
   };
 
+  const selectAllClasses = () => {
+    setSelectedClassIds(new Set(classes.map((c) => c.class_id)));
+  };
+
+  const clearClassSelection = () => {
+    setSelectedClassIds(new Set());
+  };
+
+  const filteredClasses = useMemo(() => {
+    const q = classQuery.trim().toLowerCase();
+    if (!q) return classes;
+    return classes.filter((c) => {
+      const label = String(c.name ?? c.class_id).toLowerCase();
+      return label.includes(q) || String(c.class_id).toLowerCase().includes(q);
+    });
+  }, [classes, classQuery]);
+
+  const selectedClassList = useMemo(
+    () => classes.filter((c) => selectedClassIds.has(c.class_id)).map((c) => c.name ?? c.class_id),
+    [classes, selectedClassIds]
+  );
+
   const problemLabelsPreview = useMemo(() => {
     if (!tpl) return "-";
     if (tpl.mode === "manual") {
@@ -147,7 +170,7 @@ const [err, setErr] = useState<string | null>(null);
       await apiPost(`/teacher/templates/${encodeURIComponent(id)}/distribute`, {
         title: title.trim(),
         classIds: Array.from(selectedClassIds),
-        dueDate: dueDate ? dueDate : null,
+        dueAt: dueDate ? dueDate : null,
       });
 
       router.push("/teacher/assignments");
@@ -214,7 +237,17 @@ const [err, setErr] = useState<string | null>(null);
             </div>
 
             <div className="space-y-2">
-              <div className="text-sm font-semibold">配布先クラス</div>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="text-sm font-semibold">配布先クラス</div>
+                <div className="flex gap-2 flex-wrap">
+                  <button className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50" onClick={selectAllClasses} type="button" disabled={classes.length === 0}>
+                    全クラス選択
+                  </button>
+                  <button className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50" onClick={clearClassSelection} type="button" disabled={selectedClassIds.size === 0}>
+                    選択解除
+                  </button>
+                </div>
+              </div>
 
               {classes.length === 0 ? (
                 <div className="rounded-lg border p-3 text-sm text-gray-700">
@@ -225,18 +258,44 @@ const [err, setErr] = useState<string | null>(null);
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {classes.map((c) => (
-                    <label key={c.class_id} className="flex items-center gap-2 rounded-lg border p-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedClassIds.has(c.class_id)}
-                        onChange={() => toggleClass(c.class_id)}
-                      />
-                      <span className="text-sm">{c.name ?? c.class_id}</span>
-                    </label>
-                  ))}
-                </div>
+                <>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      className="rounded-lg border px-3 py-2 w-72 max-w-full"
+                      placeholder="クラス名で絞り込み"
+                      value={classQuery}
+                      onChange={(e) => setClassQuery(e.target.value)}
+                    />
+                    <div className="text-sm text-gray-600">選択中：{selectedClassIds.size} / {classes.length}</div>
+                  </div>
+
+                  {selectedClassList.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedClassList.map((name) => (
+                        <span key={name} className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs text-green-700">
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {filteredClasses.map((c) => (
+                      <label key={c.class_id} className="flex items-center gap-2 rounded-lg border p-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedClassIds.has(c.class_id)}
+                          onChange={() => toggleClass(c.class_id)}
+                        />
+                        <span className="text-sm">{c.name ?? c.class_id}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  {filteredClasses.length === 0 && (
+                    <div className="rounded-lg border p-3 text-sm text-gray-600">該当するクラスがありません。</div>
+                  )}
+                </>
               )}
             </div>
 
