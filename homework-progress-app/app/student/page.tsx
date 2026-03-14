@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiGet } from "@/lib/api";
 import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
@@ -126,7 +126,6 @@ const writeSelfStudyBooks = (rows: SelfStudyBook[]) => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(LS_KEY_SELF_STUDY, JSON.stringify(rows));
 };
-
 
 const todayKey = () => toYMDLocal(new Date());
 
@@ -290,7 +289,31 @@ function TeacherHomeActionCard({
   );
 }
 
-function GradientInfoCard({
+function TeacherHomeActionButton({
+  onClick,
+  title,
+  desc,
+  theme,
+}: {
+  onClick: () => void;
+  title: string;
+  desc: string;
+  theme: "theme-blue" | "theme-violet" | "theme-emerald" | "theme-amber" | "theme-rose" | "theme-indigo" | "theme-slate";
+}) {
+  return (
+    <button type="button" onClick={onClick} className={`home-action-card text-left ${theme}`}>
+      <div className="home-action-card-title">{title}</div>
+      <div className="home-action-card-desc">{desc}</div>
+      <span className="home-action-card-arrow">開く</span>
+    </button>
+  );
+}
+
+function SoftPanel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ${className}`}>{children}</div>;
+}
+
+function SoftInfoCard({
   title,
   desc,
   value,
@@ -304,38 +327,17 @@ function GradientInfoCard({
   valueClass: string;
 }) {
   return (
-    <div className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ${className}`}>
+    <SoftPanel className={className}>
       <div className="text-sm text-gray-500">{title}</div>
       <div className={`mt-3 text-4xl font-bold ${valueClass}`}>{value}</div>
       <p className="mt-2 text-sm text-gray-600">{desc}</p>
-    </div>
-  );
-}
-
-function GradientNoteCard({
-  title,
-  desc,
-  actionText,
-  className,
-  actionClass,
-}: {
-  title: string;
-  desc: string;
-  actionText: string;
-  className: string;
-  actionClass: string;
-}) {
-  return (
-    <div className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ${className}`}>
-      <div className="text-lg font-semibold text-gray-900">{title}</div>
-      <p className="mt-2 text-sm leading-6 text-gray-600">{desc}</p>
-      <div className={`mt-5 text-sm font-medium ${actionClass}`}>{actionText}</div>
-    </div>
+    </SoftPanel>
   );
 }
 
 export default function StudentHomePage() {
   const router = useRouter();
+  const calendarRef = useRef<HTMLDivElement | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
   const [rows, setRows] = useState<AssignmentRow[]>([]);
@@ -347,6 +349,7 @@ export default function StudentHomePage() {
   const [selfStudyBooks, setSelfStudyBooks] = useState<SelfStudyBook[]>([]);
   const [submissionMap, setSubmissionMap] = useState<Record<string, SubmissionPayload | null>>({});
   const [todaySelfStudyCount, setTodaySelfStudyCount] = useState(0);
+  const [showLearningDetails, setShowLearningDetails] = useState(false);
   const [selfStudyTitle, setSelfStudyTitle] = useState("");
   const [selfStudyTotal, setSelfStudyTotal] = useState("");
   const [selfStudyCurrent, setSelfStudyCurrent] = useState("");
@@ -486,6 +489,10 @@ export default function StudentHomePage() {
     writeSelfStudyBooks(next);
   };
 
+  const scrollToCalendar = () => {
+    calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const classText = useMemo(() => (user?.classId ? user.classId : "未設定"), [user?.classId]);
 
   const calendarEvents: CalendarEvent[] = useMemo(() => {
@@ -583,13 +590,18 @@ export default function StudentHomePage() {
 
       {err && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>}
 
+      <div>
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900">学習進捗</h2>
+        <p className="mt-2 text-sm text-gray-600">今日の演習実績と、期限のある課題の残り題数を確認できます。必要なときだけ詳細を開いて見通しを確かめられる形にしています。</p>
+      </div>
+
       <div className="rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-100 via-white to-teal-100 p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
-        <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr] xl:items-center">
+        <div className="space-y-5">
           <div>
-            <div className="inline-flex rounded-full border border-emerald-200 bg-white/90 px-3 py-1 text-xs font-medium text-emerald-700">今日の学習の見通し</div>
-            <div className="mt-4 text-2xl font-bold text-gray-900">今日の問題演習数と期限のある課題を同じ欄で確認</div>
-            <p className="mt-3 text-sm leading-6 text-gray-600">課題一覧と自主学習への入口は下のカードに残しつつ、この欄では今見るべき数を棒グラフで大きく表示します。</p>
+            <div className="inline-flex rounded-full border border-emerald-200 bg-white/90 px-3 py-1 text-xs font-medium text-emerald-700">今日の演習実績</div>
+            <p className="mt-4 text-sm leading-6 text-gray-600">その日に入力した問題数の累積表示と、課題の残り問題数を棒グラフで確認できます。</p>
           </div>
+
           <div className="rounded-3xl bg-white/85 p-5 shadow-sm ring-1 ring-emerald-100">
             <MiniBarChart
               items={[
@@ -598,7 +610,7 @@ export default function StudentHomePage() {
                   value: learningOverview.todayPracticeCount,
                   colorClass: "bg-gradient-to-r from-emerald-300 via-green-300 to-teal-300",
                   textClass: "text-emerald-700",
-                  note: "課題内外を問わず、今日入力した問題を累積します。同じ問題を繰り返し入力しても、その日中は1題として数えます。",
+                  note: "あなたが今日演習した問題の数を表示します。同じ問題の複数回の演習は１回としてカウントされます。",
                 },
                 {
                   label: "期限のある課題の残り題数",
@@ -612,7 +624,50 @@ export default function StudentHomePage() {
                 },
               ]}
             />
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowLearningDetails((prev) => !prev)}
+                className="rounded-xl border border-emerald-200 bg-white/90 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-white"
+              >
+                {showLearningDetails ? "学習の見通し詳細を閉じる" : "学習の見通し詳細を開く"}
+              </button>
+            </div>
           </div>
+
+          {showLearningDetails ? (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <SoftInfoCard
+                title="配布中の課題"
+                value={assignmentSummary.length}
+                desc="いま取り組める課題の数です。"
+                className="border-emerald-200/90 bg-gradient-to-br from-emerald-100 via-white to-teal-100"
+                valueClass="text-emerald-700"
+              />
+              <SoftInfoCard
+                title="自主学習の問題集"
+                value={selfStudySummary.totalBooks}
+                desc="この端末で登録している冊数です。"
+                className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100"
+                valueClass="text-sky-700"
+              />
+              <SoftInfoCard
+                title="共有テスト予定"
+                value={sharedTests.length}
+                desc="先生から共有されている予定です。"
+                className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100"
+                valueClass="text-pink-700"
+              />
+              <SoftInfoCard
+                title="直近14日"
+                value={upcoming.length}
+                desc="今日から2週間の予定件数です。"
+                className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100"
+                valueClass="text-amber-700"
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -643,52 +698,17 @@ export default function StudentHomePage() {
           desc="図、動画、補助資料を見直せます。授業や課題の復習にも使える教材の入口です。"
           theme="theme-indigo"
         />
-        <GradientNoteCard
+        <TeacherHomeActionButton
+          onClick={scrollToCalendar}
           title="予定カレンダー"
           desc={`共有テスト予定と自分用テスト予定をまとめて見返せます。直近14日の件数は ${upcoming.length} 件です。`}
-          actionText="下へスクロールして確認"
-          className="border-violet-200/90 bg-gradient-to-br from-violet-100 via-white to-fuchsia-100"
-          actionClass="text-violet-700"
+          theme="theme-amber"
         />
-        <GradientNoteCard
-          title="現在のクラス"
-          desc={`現在の所属クラスは ${classText} です。共有予定や配布内容の表示対象として使われます。`}
-          actionText="現在の表示対象を確認"
-          className="border-slate-200/90 bg-gradient-to-br from-slate-100 via-white to-gray-100"
-          actionClass="text-slate-700"
-        />
-      </div>
-
-      <SectionTitle title="現在の見通し" desc="課題、自主学習、予定を四つのカードでまとめて確認できます。" />
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <GradientInfoCard
-          title="配布中の課題"
-          value={assignmentSummary.length}
-          desc="いま取り組める課題の数です。"
-          className="border-emerald-200/90 bg-gradient-to-br from-emerald-100 via-white to-teal-100"
-          valueClass="text-emerald-700"
-        />
-        <GradientInfoCard
-          title="自主学習の問題集"
-          value={selfStudySummary.totalBooks}
-          desc="この端末で登録している冊数です。"
-          className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100"
-          valueClass="text-sky-700"
-        />
-        <GradientInfoCard
-          title="共有テスト予定"
-          value={sharedTests.length}
-          desc="先生から共有されている予定です。"
-          className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100"
-          valueClass="text-pink-700"
-        />
-        <GradientInfoCard
-          title="直近14日"
-          value={upcoming.length}
-          desc="今日から2週間の予定件数です。"
-          className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100"
-          valueClass="text-amber-700"
+        <TeacherHomeActionCard
+          href="/student/quizzes"
+          title="小テスト"
+          desc="小テスト機能は準備中です。実装後はここから受験や結果確認ができるようにします。"
+          theme="theme-slate"
         />
       </div>
 
@@ -740,10 +760,10 @@ export default function StudentHomePage() {
         )}
       </div>
 
-      <SectionTitle title="自主学習できる問題集" desc="教師ホームと同じく、明るい色のカードで登録欄と一覧欄を分けて見やすくしました。" />
+      <SectionTitle title="自主学習できる問題集" desc="登録欄と一覧欄を同じ流用デザインでまとめ、見た目をそろえています。" />
 
       <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <TintedCard className="border-cyan-200 bg-cyan-50">
+        <SoftPanel className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100">
           <div className="text-lg font-semibold text-gray-900">自主学習の問題集を登録</div>
           <p className="mt-2 text-sm text-gray-600">ページ数でも問題数でもよいので、全体量と現在地を入力します。</p>
           <div className="mt-4 space-y-4">
@@ -771,9 +791,9 @@ export default function StudentHomePage() {
               </button>
             </div>
           </div>
-        </TintedCard>
+        </SoftPanel>
 
-        <TintedCard className="border-sky-200 bg-sky-50">
+        <SoftPanel className="border-sky-200/90 bg-gradient-to-br from-sky-100 via-white to-cyan-100">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-lg font-semibold text-gray-900">登録中の自主学習</div>
@@ -820,18 +840,20 @@ export default function StudentHomePage() {
               })
             )}
           </div>
-        </TintedCard>
+        </SoftPanel>
       </div>
 
-      <SectionTitle title="カレンダー" desc="課題期限とテスト予定をまとめて確認します。" />
-      <WhiteCard>
-        <MonthCalendar events={calendarEvents} />
-      </WhiteCard>
+      <div ref={calendarRef} className="space-y-4">
+        <SectionTitle title="カレンダー" desc="課題期限とテスト予定をまとめて確認します。" />
+        <WhiteCard>
+          <MonthCalendar events={calendarEvents} />
+        </WhiteCard>
+      </div>
 
       <SectionTitle title="テスト予定" desc="共有予定と自分用メモを一緒に管理できます。" />
 
       <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <TintedCard className="border-amber-200 bg-amber-50">
+        <SoftPanel className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100">
           <div className="text-lg font-semibold text-gray-900">ローカルテスト予定（この端末のみ）</div>
           <p className="mt-2 text-sm text-gray-600">自分用のメモです。ほかの端末や先生には共有されません。</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_180px_auto]">
@@ -858,9 +880,9 @@ export default function StudentHomePage() {
               ))
             )}
           </div>
-        </TintedCard>
+        </SoftPanel>
 
-        <TintedCard className="border-pink-200 bg-pink-50">
+        <SoftPanel className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100">
           <div className="text-lg font-semibold text-gray-900">直近14日（今日〜）</div>
           <p className="mt-2 text-sm text-gray-600">近い予定を日付順で見直せます。</p>
           <div className="mt-4 space-y-3">
@@ -875,7 +897,7 @@ export default function StudentHomePage() {
               ))
             )}
           </div>
-        </TintedCard>
+        </SoftPanel>
       </div>
     </div>
   );
