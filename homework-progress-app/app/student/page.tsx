@@ -47,8 +47,18 @@ type SelfStudyBook = {
   updatedAt: string;
 };
 
+type SubmissionPayload = {
+  submission: unknown | null;
+  marksByAttempt?: Record<number, Record<string, string | null>>;
+  markedAtByAttempt?: Record<number, Record<string, string | null>>;
+  firstMarkedAtByLabel?: Record<string, string | null>;
+  statusByLabel?: Record<string, string | null>;
+  timeByLabel?: Record<string, number | null>;
+};
+
 const LS_KEY_LOCAL = "hw_calendar_events_student_local";
 const LS_KEY_SELF_STUDY = "hw_student_self_study_books_v1";
+const LS_KEY_SELF_STUDY_DAILY = "hw_student_self_study_daily_unique_v1";
 
 const formatDue = (dueAt: string | null) => {
   if (!dueAt) return "無期限";
@@ -117,6 +127,70 @@ const writeSelfStudyBooks = (rows: SelfStudyBook[]) => {
   window.localStorage.setItem(LS_KEY_SELF_STUDY, JSON.stringify(rows));
 };
 
+
+const todayKey = () => toYMDLocal(new Date());
+
+const range = (start: number, end: number) => {
+  if (end < start) return [] as number[];
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+};
+
+const readDailyUniqueMap = (): Record<string, string[]> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_SELF_STUDY_DAILY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([k, v]) => [k, Array.isArray(v) ? v.map((x) => String(x)) : []]),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const writeDailyUniqueMap = (value: Record<string, string[]>) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_SELF_STUDY_DAILY, JSON.stringify(value));
+};
+
+const recordSelfStudyPractice = (bookId: string, units: number[]) => {
+  if (typeof window === "undefined" || units.length === 0) return 0;
+  const dateKey = todayKey();
+  const current = readDailyUniqueMap();
+  const todaySet = new Set(current[dateKey] ?? []);
+  const before = todaySet.size;
+  for (const unit of units) {
+    if (unit > 0) todaySet.add(`${bookId}:${unit}`);
+  }
+  current[dateKey] = Array.from(todaySet);
+  writeDailyUniqueMap(current);
+  return todaySet.size - before;
+};
+
+const readTodaySelfStudyPracticeCount = () => {
+  const current = readDailyUniqueMap();
+  return (current[todayKey()] ?? []).length;
+};
+
+const collectTodayAssignmentProblemKeys = (assignmentId: string, payload: SubmissionPayload | null | undefined) => {
+  const out = new Set<string>();
+  if (!payload) return out;
+  const day = todayKey();
+  const first = payload.firstMarkedAtByLabel ?? {};
+  for (const [label, iso] of Object.entries(first)) {
+    if (iso && toYMDLocal(new Date(iso)) === day) out.add(`${assignmentId}:${label}`);
+  }
+  const stamped = payload.markedAtByAttempt ?? {};
+  for (const byLabel of Object.values(stamped)) {
+    if (!byLabel) continue;
+    for (const [label, iso] of Object.entries(byLabel)) {
+      if (iso && toYMDLocal(new Date(iso)) === day) out.add(`${assignmentId}:${label}`);
+    }
+  }
+  return out;
+};
+
 function WhiteCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`rounded-3xl border border-gray-200 bg-white p-5 shadow-sm ${className}`}>{children}</div>;
 }
@@ -167,13 +241,14 @@ function AssignmentRangeBar({ total, done }: { total: number; done: number }) {
 function MiniBarChart({
   items,
 }: {
-  items: Array<{ label: string; value: number; colorClass: string; textClass: string; note: string }>;
+  items: Array<{ label: string; value: number; colorClass: string; textClass: string; note: string; emptyText?: string }>;
 }) {
-  const maxValue = Math.max(1, ...items.map((item) => item.value));
+  const numericValues = items.filter((item) => item.value > 0).map((item) => item.value);
+  const maxValue = Math.max(1, ...numericValues);
   return (
     <div className="space-y-4">
       {items.map((item) => {
-        const width = Math.max(10, Math.round((item.value / maxValue) * 100));
+        const width = item.value <= 0 ? 0 : Math.max(14, Math.round((item.value / maxValue) * 100));
         return (
           <div key={item.label} className="space-y-2">
             <div className="flex items-end justify-between gap-3">
@@ -181,10 +256,12 @@ function MiniBarChart({
                 <div className="text-sm font-medium text-gray-700">{item.label}</div>
                 <div className="mt-1 text-xs text-gray-500">{item.note}</div>
               </div>
-              <div className={`text-3xl font-bold ${item.textClass}`}>{item.value}</div>
+              <div className={`text-right text-3xl font-bold ${item.textClass}`}>
+                {item.value > 0 ? item.value : <span className="text-lg font-semibold">{item.emptyText ?? "0"}</span>}
+              </div>
             </div>
             <div className="h-4 overflow-hidden rounded-full bg-white/80 ring-1 ring-black/5">
-              <div className={`h-full rounded-full ${item.colorClass}`} style={{ width: `${width}%` }} />
+              <div className={`h-full rounded-full transition-all ${item.colorClass}`} style={{ width: `${width}%` }} />
             </div>
           </div>
         );
@@ -209,7 +286,7 @@ function GradientLinkCard({
   actionClass: string;
 }) {
   return (
-    <Link href={href} className={`rounded-3xl border p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${className}`}>
+    <Link href={href} className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(15,23,42,0.10)] ${className}`}>
       <div className="text-lg font-semibold text-gray-900">{title}</div>
       <p className="mt-2 text-sm leading-6 text-gray-600">{desc}</p>
       <div className={`mt-5 text-sm font-medium ${actionClass}`}>{action}</div>
@@ -228,6 +305,8 @@ export default function StudentHomePage() {
   const [localTitle, setLocalTitle] = useState("定期テスト");
   const [localDate, setLocalDate] = useState("");
   const [selfStudyBooks, setSelfStudyBooks] = useState<SelfStudyBook[]>([]);
+  const [submissionMap, setSubmissionMap] = useState<Record<string, SubmissionPayload | null>>({});
+  const [todaySelfStudyCount, setTodaySelfStudyCount] = useState(0);
   const [selfStudyTitle, setSelfStudyTitle] = useState("");
   const [selfStudyTotal, setSelfStudyTotal] = useState("");
   const [selfStudyCurrent, setSelfStudyCurrent] = useState("");
@@ -239,6 +318,7 @@ export default function StudentHomePage() {
     setAuthChecked(true);
     setLocalTests(readLocalEvents());
     setSelfStudyBooks(readSelfStudyBooks());
+    setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
   }, []);
 
   useEffect(() => {
@@ -256,10 +336,24 @@ export default function StudentHomePage() {
     setErr(null);
     setRows([]);
     setSharedTests([]);
+    setSubmissionMap({});
     if (!authChecked || !user || user.role !== "student") return;
     const [list, tests] = await Promise.all([apiGet("/student/assignments"), apiGet("/calendar/tests")]);
-    setRows(Array.isArray(list) ? (list as AssignmentRow[]) : []);
+    const nextRows = Array.isArray(list) ? (list as AssignmentRow[]) : [];
+    setRows(nextRows);
     setSharedTests(Array.isArray(tests) ? (tests as SharedTestRow[]) : []);
+
+    const submissionEntries = await Promise.all(
+      nextRows.map(async (row) => {
+        try {
+          const payload = (await apiGet(`/submissions?assignmentId=${encodeURIComponent(row.id)}`)) as SubmissionPayload;
+          return [row.id, payload ?? null] as const;
+        } catch {
+          return [row.id, null] as const;
+        }
+      }),
+    );
+    setSubmissionMap(Object.fromEntries(submissionEntries));
   };
 
   useEffect(() => {
@@ -302,9 +396,10 @@ export default function StudentHomePage() {
     if (!title) return setErr("自主学習用の問題集名を入力してください。");
     if (!selfStudyTotal.trim()) return setErr("問題集全体の量（ページ数や問題数）を入力してください。");
     setErr(null);
+    const id = crypto.randomUUID();
     const next: SelfStudyBook[] = [
       {
-        id: crypto.randomUUID(),
+        id,
         title,
         totalUnits,
         currentUnit,
@@ -315,6 +410,10 @@ export default function StudentHomePage() {
     ];
     setSelfStudyBooks(next);
     writeSelfStudyBooks(next);
+    if (currentUnit > 0) {
+      recordSelfStudyPractice(id, range(1, currentUnit));
+      setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
+    }
     setSelfStudyTitle("");
     setSelfStudyTotal("");
     setSelfStudyCurrent("");
@@ -322,17 +421,23 @@ export default function StudentHomePage() {
   };
 
   const updateSelfStudyBook = (id: string, nextCurrent: number) => {
+    const currentRow = selfStudyBooks.find((row) => row.id === id);
+    const nextValue = currentRow ? Math.max(0, Math.min(currentRow.totalUnits, nextCurrent)) : 0;
     const next = selfStudyBooks.map((row) =>
       row.id === id
         ? {
             ...row,
-            currentUnit: Math.max(0, Math.min(row.totalUnits, nextCurrent)),
+            currentUnit: nextValue,
             updatedAt: new Date().toISOString(),
           }
         : row,
     );
     setSelfStudyBooks(next);
     writeSelfStudyBooks(next);
+    if (currentRow && nextValue > currentRow.currentUnit) {
+      recordSelfStudyPractice(id, range(currentRow.currentUnit + 1, nextValue));
+      setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
+    }
   };
 
   const removeSelfStudyBook = (id: string) => {
@@ -406,15 +511,21 @@ export default function StudentHomePage() {
   }, [selfStudyBooks]);
 
   const learningOverview = useMemo(() => {
-    const today = toYMDLocal(new Date());
-    const dueToday = assignmentSummary.filter((row) => row.dueDate === today);
-    const baseRows = dueToday.length > 0 ? dueToday : assignmentSummary;
-    const todayPracticeCount = baseRows.reduce((sum, row) => sum + row.total, 0);
-    const remainingDueCount = assignmentSummary
-      .filter((row) => !!row.due_at)
-      .reduce((sum, row) => sum + row.remaining, 0);
-    return { todayPracticeCount, remainingDueCount };
-  }, [assignmentSummary]);
+    const assignmentPracticeKeys = new Set<string>();
+    for (const row of assignmentSummary) {
+      const payload = submissionMap[row.id] ?? null;
+      for (const key of collectTodayAssignmentProblemKeys(row.id, payload)) {
+        assignmentPracticeKeys.add(key);
+      }
+    }
+    const dueRows = assignmentSummary.filter((row) => !!row.due_at);
+    const remainingDueCount = dueRows.reduce((sum, row) => sum + row.remaining, 0);
+    return {
+      todayPracticeCount: assignmentPracticeKeys.size + todaySelfStudyCount,
+      remainingDueCount,
+      hasDueAssignments: dueRows.length > 0,
+    };
+  }, [assignmentSummary, submissionMap, todaySelfStudyCount]);
 
   if (!authChecked) return <div className="p-6">確認中...</div>;
   if (!user) return <div className="p-6">ログインへ遷移中...</div>;
@@ -445,16 +556,19 @@ export default function StudentHomePage() {
                 {
                   label: "今日の問題演習数",
                   value: learningOverview.todayPracticeCount,
-                  colorClass: "bg-gradient-to-r from-emerald-400 to-green-500",
+                  colorClass: "bg-gradient-to-r from-emerald-300 via-green-300 to-teal-300",
                   textClass: "text-emerald-700",
-                  note: "今日が期限の課題があればその合計、なければ配布中課題の合計です。",
+                  note: "課題内外を問わず、今日入力した問題を累積します。同じ問題を繰り返し入力しても、その日中は1題として数えます。",
                 },
                 {
                   label: "期限のある課題の残り題数",
-                  value: learningOverview.remainingDueCount,
-                  colorClass: "bg-gradient-to-r from-amber-400 to-orange-500",
+                  value: learningOverview.hasDueAssignments ? learningOverview.remainingDueCount : 0,
+                  colorClass: "bg-gradient-to-r from-amber-300 via-yellow-300 to-orange-300",
                   textClass: "text-amber-700",
-                  note: "期限が設定されている課題のうち、まだ残っている問題数です。",
+                  note: learningOverview.hasDueAssignments
+                    ? "期限付き課題の未完了分です。演習が進むと残り題数が減っていきます。"
+                    : "現在、期限が設定された課題はありません。",
+                  emptyText: "課題なし",
                 },
               ]}
             />
@@ -462,7 +576,7 @@ export default function StudentHomePage() {
         </div>
       </TintedCard>
 
-      <SectionTitle title="よく使う機能" desc="教師ホームと同じように、各カードをグラデーション付きの色でそろえました。対応する機能は同系色で合わせています。" />
+      <SectionTitle title="よく使う機能" desc="教師ホームのカード配色に寄せて、淡いグラデーションと対応色でそろえています。質問系・教材系など、対応する機能は同系色で統一しています。" />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <GradientLinkCard
@@ -470,7 +584,7 @@ export default function StudentHomePage() {
           title="課題一覧"
           desc="先生から届いた課題の一覧です。詳細ページから進捗を入力し、提出状況を確認できます。"
           action="開く"
-          className="border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50"
+          className="border-emerald-200/90 bg-gradient-to-br from-emerald-100 via-white to-teal-100"
           actionClass="text-emerald-700"
         />
         <GradientLinkCard
@@ -478,7 +592,7 @@ export default function StudentHomePage() {
           title="自主学習"
           desc="自分で進める問題集を登録し、現在地を記録します。課題とは別に学習の蓄積を残せます。"
           action="開く"
-          className="border-cyan-200 bg-gradient-to-br from-cyan-50 via-sky-50 to-blue-50"
+          className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100"
           actionClass="text-sky-700"
         />
         <GradientLinkCard
@@ -486,7 +600,7 @@ export default function StudentHomePage() {
           title="質問"
           desc="先生への質問と返信をスレッド形式で確認できます。学習中の疑問をそのまま残せます。"
           action="開く"
-          className="border-pink-200 bg-gradient-to-br from-pink-50 via-rose-50 to-fuchsia-50"
+          className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100"
           actionClass="text-pink-700"
         />
         <GradientLinkCard
@@ -494,15 +608,15 @@ export default function StudentHomePage() {
           title="教材置き場"
           desc="図、動画、補助資料を見直せます。授業や課題の復習にも使える教材の入口です。"
           action="開く"
-          className="border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50"
+          className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100"
           actionClass="text-amber-700"
         />
-        <TintedCard className="border-violet-200 bg-gradient-to-br from-violet-50 via-purple-50 to-fuchsia-50">
+        <TintedCard className="border-violet-200/90 bg-gradient-to-br from-violet-100 via-white to-fuchsia-100">
           <div className="text-lg font-semibold text-gray-900">予定カレンダー</div>
           <p className="mt-2 text-sm leading-6 text-gray-600">共有テスト予定と自分用テスト予定をまとめて見返せます。直近14日の件数は {upcoming.length} 件です。</p>
           <div className="mt-5 text-sm font-medium text-violet-700">下へスクロールして確認</div>
         </TintedCard>
-        <TintedCard className="border-slate-200 bg-gradient-to-br from-slate-50 via-gray-50 to-white">
+        <TintedCard className="border-slate-200/90 bg-gradient-to-br from-slate-100 via-white to-gray-100">
           <div className="text-lg font-semibold text-gray-900">現在のクラス</div>
           <p className="mt-2 text-sm leading-6 text-gray-600">現在の所属クラスは {classText} です。共有予定や配布内容の表示対象として使われます。</p>
           <div className="mt-5 text-sm font-medium text-slate-700">現在の表示対象を確認</div>

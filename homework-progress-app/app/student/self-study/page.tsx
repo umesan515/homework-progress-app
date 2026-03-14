@@ -15,6 +15,7 @@ type SelfStudyBook = {
 };
 
 const LS_KEY_SELF_STUDY = "hw_student_self_study_books_v1";
+const LS_KEY_SELF_STUDY_DAILY = "hw_student_self_study_daily_unique_v1";
 
 const safeNum = (v: unknown, fallback = 0) => {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -51,6 +52,51 @@ const readSelfStudyBooks = (): SelfStudyBook[] => {
 const writeSelfStudyBooks = (rows: SelfStudyBook[]) => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(LS_KEY_SELF_STUDY, JSON.stringify(rows));
+};
+
+
+const todayKey = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const range = (start: number, end: number) => {
+  if (end < start) return [] as number[];
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+};
+
+const readDailyUniqueMap = (): Record<string, string[]> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_SELF_STUDY_DAILY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([k, v]) => [k, Array.isArray(v) ? v.map((x) => String(x)) : []]),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const writeDailyUniqueMap = (value: Record<string, string[]>) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_SELF_STUDY_DAILY, JSON.stringify(value));
+};
+
+const recordSelfStudyPractice = (bookId: string, units: number[]) => {
+  if (typeof window === "undefined" || units.length === 0) return;
+  const current = readDailyUniqueMap();
+  const key = todayKey();
+  const set = new Set(current[key] ?? []);
+  for (const unit of units) {
+    if (unit > 0) set.add(`${bookId}:${unit}`);
+  }
+  current[key] = Array.from(set);
+  writeDailyUniqueMap(current);
 };
 
 function TintedCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -110,9 +156,10 @@ export default function StudentSelfStudyPage() {
     if (!totalUnits.trim()) return setErr("全体量を入力してください。");
     const total = Math.max(1, safeNum(totalUnits, 1));
     const current = Math.max(0, Math.min(total, safeNum(currentUnit, 0)));
+    const id = crypto.randomUUID();
     const next: SelfStudyBook[] = [
       {
-        id: crypto.randomUUID(),
+        id,
         title: trimmed,
         totalUnits: total,
         currentUnit: current,
@@ -123,6 +170,7 @@ export default function StudentSelfStudyPage() {
     ];
     setRows(next);
     writeSelfStudyBooks(next);
+    if (current > 0) recordSelfStudyPractice(id, range(1, current));
     setErr(null);
     setTitle("");
     setTotalUnits("");
@@ -131,17 +179,24 @@ export default function StudentSelfStudyPage() {
   };
 
   const updateRow = (id: string, patch: Partial<SelfStudyBook>) => {
+    const before = rows.find((row) => row.id === id);
+    let afterCurrent = before?.currentUnit ?? 0;
     const next = rows.map((row) => {
       if (row.id !== id) return row;
       const merged = { ...row, ...patch, updatedAt: new Date().toISOString() };
-      return {
+      const normalized = {
         ...merged,
         totalUnits: Math.max(1, safeNum(merged.totalUnits, 1)),
         currentUnit: Math.max(0, Math.min(Math.max(1, safeNum(merged.totalUnits, 1)), safeNum(merged.currentUnit, 0))),
       };
+      afterCurrent = normalized.currentUnit;
+      return normalized;
     });
     setRows(next);
     writeSelfStudyBooks(next);
+    if (before && afterCurrent > before.currentUnit) {
+      recordSelfStudyPractice(id, range(before.currentUnit + 1, afterCurrent));
+    }
   };
 
   const removeRow = (id: string) => {
@@ -213,7 +268,7 @@ export default function StudentSelfStudyPage() {
         </div>
       </TintedCard>
 
-      <SectionTitle title="問題集を追加" desc="教師ページの雰囲気に合わせ、やわらかい色の入力カードに戻しました。" />
+      <SectionTitle title="問題集を追加" desc="教師ページの雰囲気に合わせ、教師ホームに寄せた淡いグラデーションの入力カードにしています。" />
       <TintedCard className="border-amber-200 bg-amber-50">
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="space-y-2">
