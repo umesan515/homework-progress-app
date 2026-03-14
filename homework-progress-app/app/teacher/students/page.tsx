@@ -1,9 +1,9 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { apiGet, apiPost, apiPut } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { getUserFromToken, logout } from "@/lib/auth";
 
 type TeacherUser = {
@@ -35,310 +35,42 @@ type BulkCreateResponse = {
 type BulkParsedRow = {
   loginId: string;
   displayName: string;
-  displayNameKana?: string;
-  attendanceNumber?: string;
-  source: "loginId" | "generated";
 };
 
 const ALL_CLASS = "ALL";
-const DEFAULT_ID_PREFIX = "";
-
-const COMMON_SURNAME_ROMAJI: Record<string, string> = {
-  "田中": "tanaka",
-  "佐藤": "satou",
-  "鈴木": "suzuki",
-  "高橋": "takahashi",
-  "渡辺": "watanabe",
-  "渡邊": "watanabe",
-  "伊藤": "itou",
-  "山本": "yamamoto",
-  "中村": "nakamura",
-  "小林": "kobayashi",
-  "加藤": "katou",
-  "吉田": "yoshida",
-  "山田": "yamada",
-  "佐々木": "sasaki",
-  "山口": "yamaguchi",
-  "松本": "matsumoto",
-  "井上": "inoue",
-  "木村": "kimura",
-  "林": "hayashi",
-  "斉藤": "saitou",
-  "斎藤": "saitou",
-  "齋藤": "saitou",
-  "清水": "shimizu",
-  "山崎": "yamazaki",
-  "山﨑": "yamazaki",
-  "阿部": "abe",
-  "池田": "ikeda",
-  "橋本": "hashimoto",
-  "石川": "ishikawa",
-  "前田": "maeda",
-  "藤田": "fujita",
-  "小川": "ogawa",
-  "後藤": "gotou",
-  "岡田": "okada",
-  "長谷川": "hasegawa",
-  "村上": "murakami",
-  "近藤": "kondou",
-  "石井": "ishii",
-  "坂本": "sakamoto",
-  "遠藤": "endou",
-  "青木": "aoki",
-  "藤井": "fujii",
-  "西村": "nishimura",
-  "福田": "fukuda",
-  "太田": "oota",
-  "大田": "oota",
-  "三浦": "miura",
-  "藤原": "fujiwara",
-  "岡本": "okamoto",
-  "松田": "matsuda",
-  "中島": "nakajima",
-  "中野": "nakano",
-  "原田": "harada",
-  "小野": "ono",
-  "田村": "tamura",
-  "竹内": "takeuchi",
-  "金子": "kaneko",
-  "和田": "wada",
-  "中川": "nakagawa",
-};
-
-function splitCsvLine(line: string): string[] {
-  return line
-    .replaceAll("，", ",")
-    .split(",")
-    .map((part) => part.trim().replace(/^"(.*)"$/, "$1"));
-}
 
 function normalizeBulkSourceText(text: string): string {
-  return text.replace(/^\ufeff/, "").replace(/\r\n/g, "\n");
-}
+  const normalized = text.replace(/^\ufeff/, "");
+  const lines = normalized
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-function countMojibakeIndicators(text: string): number {
-  return (text.match(/[�Ã¢ã]/g) ?? []).length;
-}
-
-function decodeCsvArrayBuffer(buffer: ArrayBuffer): string {
-  const encodings = ["utf-8", "shift_jis"] as const;
-  const candidates = encodings.map((encoding) => {
-    try {
-      const decoded = new TextDecoder(encoding).decode(buffer);
-      return { encoding, decoded, score: countMojibakeIndicators(decoded) };
-    } catch {
-      return { encoding, decoded: "", score: Number.MAX_SAFE_INTEGER };
-    }
+  const body = lines.filter((line, index) => {
+    if (index !== 0) return true;
+    const compact = line.replace(/[\s"']/g, "").toLowerCase();
+    return compact !== "loginid,displayname" && compact !== "login_id,display_name";
   });
-  candidates.sort((a, b) => a.score - b.score);
-  return candidates[0]?.decoded ?? "";
+
+  return body.join("\n");
 }
 
-function sanitizeIdToken(token: string): string {
-  return token.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function normalizeClassToken(classId: string): string {
-  return classId
-    .trim()
-    .toLowerCase()
-    .replace(/[\s　]/g, "")
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function normalizeAttendanceToken(value: string): string {
-  const digits = value.trim().replace(/[^0-9]/g, "");
-  if (!digits) return "";
-  const n = Number(digits);
-  if (!Number.isFinite(n)) return "";
-  return String(Math.trunc(n)).padStart(2, "0");
-}
-
-function toKatakana(value: string): string {
-  return value.replace(/[ぁ-ゖ]/g, (s) => String.fromCharCode(s.charCodeAt(0) + 0x60));
-}
-
-function kanaToRomaji(value: string): string {
-  const text = toKatakana(value);
-  const digraphMap: Record<string, string> = {
-    キャ: "kya", キュ: "kyu", キョ: "kyo",
-    シャ: "sha", シュ: "shu", ショ: "sho",
-    チャ: "cha", チュ: "chu", チョ: "cho",
-    ニャ: "nya", ニュ: "nyu", ニョ: "nyo",
-    ヒャ: "hya", ヒュ: "hyu", ヒョ: "hyo",
-    ミャ: "mya", ミュ: "myu", ミョ: "myo",
-    リャ: "rya", リュ: "ryu", リョ: "ryo",
-    ギャ: "gya", ギュ: "gyu", ギョ: "gyo",
-    ジャ: "ja", ジュ: "ju", ジョ: "jo",
-    ビャ: "bya", ビュ: "byu", ビョ: "byo",
-    ピャ: "pya", ピュ: "pyu", ピョ: "pyo",
-  };
-  const monoMap: Record<string, string> = {
-    ア: "a", イ: "i", ウ: "u", エ: "e", オ: "o",
-    カ: "ka", キ: "ki", ク: "ku", ケ: "ke", コ: "ko",
-    サ: "sa", シ: "shi", ス: "su", セ: "se", ソ: "so",
-    タ: "ta", チ: "chi", ツ: "tsu", テ: "te", ト: "to",
-    ナ: "na", ニ: "ni", ヌ: "nu", ネ: "ne", ノ: "no",
-    ハ: "ha", ヒ: "hi", フ: "fu", ヘ: "he", ホ: "ho",
-    マ: "ma", ミ: "mi", ム: "mu", メ: "me", モ: "mo",
-    ヤ: "ya", ユ: "yu", ヨ: "yo",
-    ラ: "ra", リ: "ri", ル: "ru", レ: "re", ロ: "ro",
-    ワ: "wa", ヲ: "wo", ン: "n",
-    ガ: "ga", ギ: "gi", グ: "gu", ゲ: "ge", ゴ: "go",
-    ザ: "za", ジ: "ji", ズ: "zu", ゼ: "ze", ゾ: "zo",
-    ダ: "da", ヂ: "ji", ヅ: "zu", デ: "de", ド: "do",
-    バ: "ba", ビ: "bi", ブ: "bu", ベ: "be", ボ: "bo",
-    パ: "pa", ピ: "pi", プ: "pu", ペ: "pe", ポ: "po",
-    ァ: "a", ィ: "i", ゥ: "u", ェ: "e", ォ: "o",
-    ー: "-",
-  };
-
-  let result = "";
-  let geminate = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === "ッ") {
-      geminate = true;
-      continue;
-    }
-    const pair = text.slice(i, i + 2);
-    let chunk = digraphMap[pair];
-    if (chunk) {
-      i += 1;
-    } else {
-      chunk = monoMap[char] ?? "";
-    }
-    if (!chunk) continue;
-    if (chunk === "-") {
-      if (/[aeiou]$/.test(result)) result += result.slice(-1);
-      continue;
-    }
-    if (geminate) {
-      chunk = `${chunk[0] || ""}${chunk}`;
-      geminate = false;
-    }
-    result += chunk;
-  }
-  return sanitizeIdToken(result);
-}
-
-function firstSurnameToken(displayName: string): string {
-  const normalized = displayName.trim().replace(/[　]+/g, " ");
-  if (!normalized) return "";
-  return normalized.split(" ")[0] ?? "";
-}
-
-function surnameToIdToken(displayName: string): string {
-  const surname = firstSurnameToken(displayName);
-  if (!surname) return "";
-  const ascii = sanitizeIdToken(surname);
-  if (ascii) return ascii;
-  const mapped = COMMON_SURNAME_ROMAJI[surname];
-  if (mapped) return sanitizeIdToken(mapped);
-  const kana = kanaToRomaji(surname);
-  if (kana) return kana;
-  return "";
-}
-
-function buildGeneratedLoginId(prefix: string, classId: string, attendanceNumber: string, displayName = ""): string {
-  const explicitPrefix = sanitizeIdToken(prefix);
-  const baseToken = explicitPrefix || surnameToIdToken(displayName);
-  const classToken = normalizeClassToken(classId);
-  const attendanceToken = normalizeAttendanceToken(attendanceNumber);
-  if (!baseToken || !classToken || !attendanceToken) return "";
-  return `${baseToken}${classToken}${attendanceToken}`;
-}
-
-function isLikelyHeaderRow(cols: string[]): boolean {
-  const compact = cols.map((col) => col.replace(/[\s_"']/g, "").toLowerCase());
-  return compact.some((col) =>
-    [
-      "loginid",
-      "login",
-      "userid",
-      "studentid",
-      "displayname",
-      "displaynamekana",
-      "kananame",
-      "name",
-      "attendancenumber",
-      "number",
-      "shussekibangou",
-      "出席番号",
-      "氏名",
-      "名前",
-      "生徒id",
-      "ログインid",
-    ].includes(col)
-  );
-}
-
-function parseBulkStudents(text: string, classId: string, idPrefix: string): BulkParsedRow[] {
+function parseBulkStudents(text: string): BulkParsedRow[] {
   const lines = text
     .split(/\r?\n/g)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (lines.length === 0) return [];
-
-  const firstCols = splitCsvLine(lines[0]);
-  const hasHeader = isLikelyHeaderRow(firstCols);
-
   const rows: BulkParsedRow[] = [];
-  if (hasHeader) {
-    const headers = firstCols.map((col) => col.replace(/[\s_"']/g, "").toLowerCase());
-    const loginIndex = headers.findIndex((col) => ["loginid", "login", "userid", "studentid", "生徒id", "ログインid", "mail", "email", "メールアドレス"].includes(col));
-    const displayIndex = headers.findIndex((col) => ["displayname", "name", "氏名", "名前", "漢字氏名"].includes(col));
-    const displayKanaIndex = headers.findIndex((col) => ["displaynamekana", "kananame", "かな氏名", "ひらがなしめい", "ひらがな氏名", "ふりがな"].includes(col));
-    const attendanceIndex = headers.findIndex((col) => ["attendancenumber", "number", "shussekibangou", "出席番号"].includes(col));
-
-    for (const line of lines.slice(1)) {
-      const cols = splitCsvLine(line);
-      const rawLoginId = loginIndex >= 0 ? (cols[loginIndex] ?? "").trim() : "";
-      const displayName = displayIndex >= 0 ? (cols[displayIndex] ?? "").trim() : "";
-      const displayNameKana = displayKanaIndex >= 0 ? (cols[displayKanaIndex] ?? "").trim() : "";
-      const attendanceNumber = attendanceIndex >= 0 ? normalizeAttendanceToken(cols[attendanceIndex] ?? "") : "";
-      const generatedLoginId = rawLoginId || buildGeneratedLoginId(idPrefix, classId, attendanceNumber, displayName);
-      if (!generatedLoginId) continue;
-      rows.push({
-        loginId: generatedLoginId,
-        displayName: displayName || generatedLoginId,
-        displayNameKana,
-        attendanceNumber,
-        source: rawLoginId ? "loginId" : "generated",
-      });
-    }
-    return rows;
-  }
-
   for (const line of lines) {
-    const cols = splitCsvLine(line);
-    const first = cols[0] ?? "";
-    const second = cols[1] ?? "";
-    const third = cols[2] ?? "";
-
-    if (/^\d+$/.test(first) && second) {
-      const attendanceNumber = normalizeAttendanceToken(first);
-      const displayName = second.trim();
-      const hasFourColumns = cols.length >= 4;
-      const displayNameKana = hasFourColumns ? third.trim() : cols.length >= 3 && !third.includes("@") ? third.trim() : "";
-      const rawLoginId = hasFourColumns ? (cols[3] ?? "").trim() : cols.length >= 3 && third.includes("@") ? third.trim() : "";
-      const generatedLoginId = rawLoginId || buildGeneratedLoginId(idPrefix, classId, attendanceNumber, displayName);
-      if (!generatedLoginId) continue;
-      rows.push({
-        loginId: generatedLoginId,
-        displayName: displayName || generatedLoginId,
-        displayNameKana,
-        attendanceNumber,
-        source: rawLoginId ? "loginId" : "generated",
-      });
-      continue;
-    }
-
-    const loginId = first.trim();
+    const cols = line
+      .replaceAll("，", ",")
+      .split(",")
+      .map((part) => part.trim());
+    const loginId = cols[0] ?? "";
     const displayName = cols.slice(1).join(",").trim();
     if (!loginId) continue;
-    rows.push({ loginId, displayName: displayName || loginId, source: "loginId" });
+    rows.push({ loginId, displayName });
   }
   return rows;
 }
@@ -376,17 +108,10 @@ export default function TeacherStudentsPage() {
   const [createDisplayName, setCreateDisplayName] = useState("");
   const [createPassword, setCreatePassword] = useState("");
   const [createClassId, setCreateClassId] = useState("");
-  const [createAttendanceNumber, setCreateAttendanceNumber] = useState("");
-  const [createIdPrefix, setCreateIdPrefix] = useState("");
-  const [showCreatePassword, setShowCreatePassword] = useState(false);
 
   const [bulkClassId, setBulkClassId] = useState("");
   const [bulkPassword, setBulkPassword] = useState("");
   const [bulkText, setBulkText] = useState("");
-  const [bulkIdPrefix, setBulkIdPrefix] = useState("");
-  const [showBulkPassword, setShowBulkPassword] = useState(false);
-  const [bulkSourceFileName, setBulkSourceFileName] = useState("");
-  const bulkFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [editingUid, setEditingUid] = useState<string | null>(null);
   const [editDisplayName, setEditDisplayName] = useState("");
@@ -467,7 +192,7 @@ export default function TeacherStudentsPage() {
     });
   }, [normalizedSearch, selectedClass, students]);
 
-  const bulkRows = useMemo(() => parseBulkStudents(bulkText, bulkClassId, bulkIdPrefix), [bulkClassId, bulkIdPrefix, bulkText]);
+  const bulkRows = useMemo(() => parseBulkStudents(bulkText), [bulkText]);
   const duplicateBulkLoginIds = useMemo(() => {
     const counts = new Map<string, number>();
     for (const row of bulkRows) {
@@ -476,14 +201,7 @@ export default function TeacherStudentsPage() {
     return new Set(Array.from(counts.entries()).filter(([, count]) => count > 1).map(([loginId]) => loginId));
   }, [bulkRows]);
 
-  const bulkExplicitLoginIdCount = useMemo(() => bulkRows.filter((row) => row.source === "loginId").length, [bulkRows]);
-  const bulkUsesMixedLoginPolicy = bulkRows.length > 0 && bulkExplicitLoginIdCount > 0 && bulkExplicitLoginIdCount < bulkRows.length;
   const existingLoginIds = useMemo(() => new Set(students.map((row) => row.login_id)), [students]);
-
-  const generatedCreateLoginId = useMemo(() => {
-    if (createLoginId.trim()) return createLoginId.trim();
-    return buildGeneratedLoginId(createIdPrefix, createClassId, createAttendanceNumber, createDisplayName);
-  }, [createAttendanceNumber, createClassId, createDisplayName, createIdPrefix, createLoginId]);
 
   const classCount = classes.length;
   const studentCount = students.length;
@@ -493,9 +211,6 @@ export default function TeacherStudentsPage() {
     setCreateDisplayName("");
     setCreatePassword("");
     setCreateClassId(selectedClass !== ALL_CLASS ? selectedClass : "");
-    setCreateAttendanceNumber("");
-    setCreateIdPrefix("");
-    setShowCreatePassword(false);
   };
 
   const beginEdit = (row: StudentRow) => {
@@ -570,21 +285,13 @@ export default function TeacherStudentsPage() {
   };
 
   const submitCreateStudent = async () => {
-    const loginId = generatedCreateLoginId.trim();
+    const loginId = createLoginId.trim();
     const displayName = createDisplayName.trim();
     const password = createPassword;
     const classId = createClassId.trim();
 
-    if (!displayName) {
-      setErr("表示名を入力してください。");
-      return;
-    }
-    if (!password || !classId) {
-      setErr("クラスと初期パスワードを入力してください。");
-      return;
-    }
-    if (!loginId) {
-      setErr("生徒IDを直接入力するか、接頭辞または氏名・クラス・出席番号から自動生成できるように入力してください。");
+    if (!loginId || !password || !classId) {
+      setErr("生徒ID、クラス、初期パスワードを入力してください。");
       return;
     }
 
@@ -594,7 +301,7 @@ export default function TeacherStudentsPage() {
     try {
       await apiPost("/teacher/students", {
         loginId,
-        displayName,
+        displayName: displayName || loginId,
         password,
         classId,
       });
@@ -613,11 +320,9 @@ export default function TeacherStudentsPage() {
     if (!file) return;
 
     try {
-      const buffer = await file.arrayBuffer();
-      const decoded = decodeCsvArrayBuffer(buffer);
-      const normalized = normalizeBulkSourceText(decoded);
+      const text = await file.text();
+      const normalized = normalizeBulkSourceText(text);
       setBulkText(normalized);
-      setBulkSourceFileName(file.name);
       setOkMsg(`CSVファイル ${file.name} を読み込みました。`);
       setErr(null);
     } catch (e: any) {
@@ -628,7 +333,7 @@ export default function TeacherStudentsPage() {
   };
 
   const downloadBulkCsvTemplate = () => {
-    const csv = "attendanceNumber,displayName,displayNameKana\n1,田中 太郎,たなか たろう\n2,佐藤 花子,さとう はなこ\n3,山本 葵,やまもと あおい\n";
+    const csv = "loginId,displayName\nstudent02,田中 太郎\nstudent03,佐藤 花子\n";
     const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -655,10 +360,6 @@ export default function TeacherStudentsPage() {
       setErr(`一括入力内で生徒IDが重複しています: ${Array.from(duplicateBulkLoginIds).join(", ")}`);
       return;
     }
-    if (bulkUsesMixedLoginPolicy) {
-      setErr("メールアドレスなど loginId を使う場合は、一括登録の全員に loginId 列を入力してください。自動生成と混在はできません。");
-      return;
-    }
 
     setBusy(true);
     setErr(null);
@@ -671,7 +372,6 @@ export default function TeacherStudentsPage() {
       });
       setOkMsg(summarizeBulkResult(result));
       setBulkText("");
-      setBulkSourceFileName("");
       setSelectedClass(classId);
       await load();
     } catch (e: any) {
@@ -705,6 +405,52 @@ export default function TeacherStudentsPage() {
       await load();
     } catch (e: any) {
       setErr(String(e?.message ?? "生徒情報の更新に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDeleteClass = async () => {
+    if (selectedClass === ALL_CLASS) {
+      setErr("削除するクラスを選択してください。");
+      return;
+    }
+    const yes = window.confirm(`クラス ${selectedClass} を削除します。所属生徒もまとめて削除されます。よろしいですか。`);
+    if (!yes) return;
+
+    setBusy(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      const result = await apiDelete<{ class_id: string; deleted_students?: number }>(`/teacher/classes/${encodeURIComponent(selectedClass)}`);
+      setOkMsg(`クラス ${result.class_id} を削除しました。削除生徒数: ${result.deleted_students ?? 0} 件`);
+      setSelectedClass(ALL_CLASS);
+      setRenameClassId("");
+      setCreateClassId("");
+      setBulkClassId("");
+      cancelEdit();
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message ?? "クラス削除に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDeleteStudent = async (uid: string) => {
+    const yes = window.confirm(`生徒 ${uid} を削除します。よろしいですか。`);
+    if (!yes) return;
+
+    setBusy(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      await apiDelete(`/teacher/students/${encodeURIComponent(uid)}`);
+      if (editingUid === uid) cancelEdit();
+      setOkMsg(`生徒 ${uid} を削除しました。`);
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message ?? "生徒削除に失敗しました。"));
     } finally {
       setBusy(false);
     }
@@ -819,6 +565,11 @@ export default function TeacherStudentsPage() {
                 </button>
               </div>
               <div className="text-xs text-slate-500">現在の選択: {selectedClass === ALL_CLASS ? "全クラス" : selectedClass}</div>
+              <div>
+                <button className="danger-button" onClick={submitDeleteClass} disabled={busy || selectedClass === ALL_CLASS} type="button">
+                  選択クラスを削除
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -838,83 +589,27 @@ export default function TeacherStudentsPage() {
                   <input className="form-input" value={bulkClassId} onChange={(e) => setBulkClassId(e.target.value)} placeholder="例: 1A" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm text-slate-700">ID接頭辞（任意）</label>
+                  <label className="text-sm text-slate-700">共通初期パスワード</label>
                   <input
                     className="form-input"
-                    value={bulkIdPrefix}
-                    onChange={(e) => setBulkIdPrefix(e.target.value)}
-                    placeholder="空欄なら姓から自動生成"
+                    type="password"
+                    value={bulkPassword}
+                    onChange={(e) => setBulkPassword(e.target.value)}
+                    placeholder="全員に設定する初期パスワード"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm text-slate-700">共通初期パスワード</label>
-                  <div className="flex gap-2">
-                    <input
-                      className="form-input"
-                      type={showBulkPassword ? "text" : "password"}
-                      value={bulkPassword}
-                      onChange={(e) => setBulkPassword(e.target.value)}
-                      placeholder="全員に設定する初期パスワード"
-                    />
-                    <button
-                      className="subtle-button shrink-0"
-                      onClick={() => setShowBulkPassword((prev) => !prev)}
-                      type="button"
-                    >
-                      {showBulkPassword ? "非表示" : "表示"}
-                    </button>
-                  </div>
-                </div>
                 <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm text-slate-700">CSV読込</label>
-                  <input
-                    ref={bulkFileInputRef}
-                    type="file"
-                    accept=".csv,text/csv"
-                    onChange={onBulkCsvSelected}
-                    className="hidden"
-                  />
-                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                    <button className="subtle-button" onClick={() => bulkFileInputRef.current?.click()} type="button">
-                      CSVファイルを選択
-                    </button>
-                    <button className="subtle-button" onClick={downloadBulkCsvTemplate} type="button">
-                      テンプレートCSVを保存
-                    </button>
-                  </div>
-                  <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-3 text-sm text-slate-600">
-                    {bulkSourceFileName ? `選択中のCSV: ${bulkSourceFileName}` : "attendanceNumber,displayName,displayNameKana のCSVを選ぶと、自動で下欄へ反映します。"}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    Excelで保存したCSVの文字化けを減らすため、UTF-8 と Shift_JIS の両方を考慮して読み込みます。基本の列は「出席番号・漢字氏名・ひらがな氏名」です。メールアドレスを使う場合は 4 列目 loginId を一括登録する全員に入れてください。
-                  </div>
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm text-slate-700">読込内容（自動入力後にそのまま確認・修正できます）</label>
+                  <label className="text-sm text-slate-700">生徒一覧（1行ごとに「生徒ID,表示名」）</label>
                   <textarea
                     className="form-input min-h-[160px]"
                     value={bulkText}
                     onChange={(e) => setBulkText(e.target.value)}
-                    placeholder={`例1: 姓から自動生成
-attendanceNumber,displayName,displayNameKana
-1,田中 太郎,たなか たろう
-2,佐藤 花子,さとう はなこ
-
-例2: 接頭辞を使って自動生成
-attendanceNumber,displayName,displayNameKana
-1,田中 太郎,たなか たろう
-2,佐藤 花子,さとう はなこ
-
-例3: メールアドレスを一括指定
-attendanceNumber,displayName,displayNameKana,loginId
-1,田中 太郎,たなか たろう,tanaka@example.ed.jp
-2,佐藤 花子,さとう はなこ,satou@example.ed.jp`}
+                    placeholder={"例:\nstudent02,田中 太郎\nstudent03,佐藤 花子\nstudent04"}
                   />
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 space-y-1">
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
                 <div>入力行数: {bulkRows.length} 件</div>
-                <div>自動生成IDの例: {buildGeneratedLoginId(bulkIdPrefix, bulkClassId || "1A", "1", "田中 太郎") || "tanaka1a01"}</div>
                 <div>重複ID: {duplicateBulkLoginIds.size > 0 ? Array.from(duplicateBulkLoginIds).join(", ") : "なし"}</div>
                 <div>
                   既存IDとの重複候補: {
@@ -924,37 +619,7 @@ attendanceNumber,displayName,displayNameKana,loginId
                       .join(", ") || "なし"
                   }
                 </div>
-                <div className="text-xs text-slate-500">
-                  接頭辞は任意です。入力した場合は「接頭辞 + クラス + 2桁の出席番号」で登録します。空欄なら氏名の姓から生成します。出席番号は 1 桁でも 01 のように 2 桁で登録します。loginId 列を使う場合は全員分を入力してください。
-                </div>
               </div>
-              {bulkRows.length > 0 && (
-                <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                  <table className="min-w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-600">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-semibold">出席番号</th>
-                        <th className="px-3 py-2 text-left font-semibold">漢字氏名</th>
-                        <th className="px-3 py-2 text-left font-semibold">ひらがな氏名</th>
-                        <th className="px-3 py-2 text-left font-semibold">登録される生徒ID</th>
-                        <th className="px-3 py-2 text-left font-semibold">生成方法</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bulkRows.slice(0, 8).map((row, index) => (
-                        <tr key={`${row.loginId}-${index}`} className="border-t border-slate-100">
-                          <td className="px-3 py-2 text-slate-700">{row.attendanceNumber || "-"}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.displayName}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.displayNameKana || "-"}</td>
-                          <td className="px-3 py-2 font-medium text-slate-900">{row.loginId}</td>
-                          <td className="px-3 py-2 text-slate-600">{row.source === "generated" ? "自動生成" : "CSV指定"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {bulkRows.length > 8 && <div className="px-3 py-2 text-xs text-slate-500">先頭8件のみ表示しています。</div>}
-                </div>
-              )}
               <button className="subtle-button" onClick={submitBulkCreate} disabled={busy}>
                 一括追加を実行
               </button>
@@ -964,6 +629,10 @@ attendanceNumber,displayName,displayNameKana,loginId
               <div className="text-sm font-bold text-slate-800">生徒アカウントを個別追加</div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className="space-y-2">
+                  <label className="text-sm text-slate-700">生徒ID</label>
+                  <input className="form-input" value={createLoginId} onChange={(e) => setCreateLoginId(e.target.value)} placeholder="例: student02" />
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm text-slate-700">表示名</label>
                   <input className="form-input" value={createDisplayName} onChange={(e) => setCreateDisplayName(e.target.value)} placeholder="例: 田中 太郎" />
                 </div>
@@ -972,50 +641,15 @@ attendanceNumber,displayName,displayNameKana,loginId
                   <input className="form-input" value={createClassId} onChange={(e) => setCreateClassId(e.target.value)} placeholder="例: 1A" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm text-slate-700">ID接頭辞（任意）</label>
-                  <input className="form-input" value={createIdPrefix} onChange={(e) => setCreateIdPrefix(e.target.value)} placeholder="空欄なら姓から自動生成" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm text-slate-700">出席番号</label>
-                  <input
-                    className="form-input"
-                    value={createAttendanceNumber}
-                    onChange={(e) => setCreateAttendanceNumber(e.target.value)}
-                    placeholder="例: 1"
-                  />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm text-slate-700">生徒ID</label>
-                  <input
-                    className="form-input"
-                    value={createLoginId}
-                    onChange={(e) => setCreateLoginId(e.target.value)}
-                    placeholder="空欄なら接頭辞または氏名・クラス・出席番号から自動生成"
-                  />
-                  <div className="text-xs text-slate-500">登録される生徒ID: {generatedCreateLoginId || "未生成"}（接頭辞が空欄なら姓から生成、出席番号は 2 桁化）</div>
-                </div>
-                <div className="space-y-2">
                   <label className="text-sm text-slate-700">初期パスワード</label>
-                  <div className="flex gap-2">
-                    <input
-                      className="form-input"
-                      type={showCreatePassword ? "text" : "password"}
-                      value={createPassword}
-                      onChange={(e) => setCreatePassword(e.target.value)}
-                      placeholder="初期パスワード"
-                    />
-                    <button
-                      className="subtle-button shrink-0"
-                      onClick={() => setShowCreatePassword((prev) => !prev)}
-                      type="button"
-                    >
-                      {showCreatePassword ? "非表示" : "表示"}
-                    </button>
-                  </div>
+                  <input
+                    className="form-input"
+                    type="password"
+                    value={createPassword}
+                    onChange={(e) => setCreatePassword(e.target.value)}
+                    placeholder="初期パスワード"
+                  />
                 </div>
-              </div>
-              <div className="text-xs text-slate-500">
-                接頭辞は任意です。入力した場合は {buildGeneratedLoginId("prefix", "1A", "1", "田中 太郎") || "prefix1a01"}、空欄なら {buildGeneratedLoginId("", "1A", "1", "田中 太郎") || "tanaka1a01"} のように生成します。出席番号は 1 でも 01 として登録します。
               </div>
               <button className="subtle-button" onClick={submitCreateStudent} disabled={busy}>
                 生徒を追加
@@ -1054,9 +688,14 @@ attendanceNumber,displayName,displayNameKana,loginId
                               ID: {row.login_id} / クラス: {row.class_id ?? "—"}
                             </div>
                           </div>
-                          <button className="subtle-button" onClick={() => beginEdit(row)} type="button">
-                            {isEditing ? "編集中" : "編集"}
-                          </button>
+                          <div className="flex flex-wrap gap-2">
+                            <button className="subtle-button" onClick={() => beginEdit(row)} type="button">
+                              {isEditing ? "編集中" : "編集"}
+                            </button>
+                            <button className="danger-button" onClick={() => submitDeleteStudent(row.uid)} type="button" disabled={busy}>
+                              削除
+                            </button>
+                          </div>
                         </div>
 
                         {isEditing && (
