@@ -270,27 +270,67 @@ function MiniBarChart({
   );
 }
 
-function GradientLinkCard({
+function TeacherHomeActionCard({
   href,
   title,
   desc,
-  action,
-  className,
-  actionClass,
+  theme,
 }: {
   href: string;
   title: string;
   desc: string;
-  action: string;
+  theme: "theme-blue" | "theme-violet" | "theme-emerald" | "theme-amber" | "theme-rose" | "theme-indigo" | "theme-slate";
+}) {
+  return (
+    <Link href={href} className={`home-action-card ${theme}`}>
+      <div className="home-action-card-title">{title}</div>
+      <div className="home-action-card-desc">{desc}</div>
+      <span className="home-action-card-arrow">開く</span>
+    </Link>
+  );
+}
+
+function GradientInfoCard({
+  title,
+  desc,
+  value,
+  className,
+  valueClass,
+}: {
+  title: string;
+  desc: string;
+  value: React.ReactNode;
+  className: string;
+  valueClass: string;
+}) {
+  return (
+    <div className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ${className}`}>
+      <div className="text-sm text-gray-500">{title}</div>
+      <div className={`mt-3 text-4xl font-bold ${valueClass}`}>{value}</div>
+      <p className="mt-2 text-sm text-gray-600">{desc}</p>
+    </div>
+  );
+}
+
+function GradientNoteCard({
+  title,
+  desc,
+  actionText,
+  className,
+  actionClass,
+}: {
+  title: string;
+  desc: string;
+  actionText: string;
   className: string;
   actionClass: string;
 }) {
   return (
-    <Link href={href} className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(15,23,42,0.10)] ${className}`}>
+    <div className={`rounded-3xl border p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ${className}`}>
       <div className="text-lg font-semibold text-gray-900">{title}</div>
       <p className="mt-2 text-sm leading-6 text-gray-600">{desc}</p>
-      <div className={`mt-5 text-sm font-medium ${actionClass}`}>{action}</div>
-    </Link>
+      <div className={`mt-5 text-sm font-medium ${actionClass}`}>{actionText}</div>
+    </div>
   );
 }
 
@@ -543,7 +583,7 @@ export default function StudentHomePage() {
 
       {err && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>}
 
-      <TintedCard className="border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-white">
+      <div className="rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-100 via-white to-teal-100 p-5 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
         <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr] xl:items-center">
           <div>
             <div className="inline-flex rounded-full border border-emerald-200 bg-white/90 px-3 py-1 text-xs font-medium text-emerald-700">今日の学習の見通し</div>
@@ -574,78 +614,82 @@ export default function StudentHomePage() {
             />
           </div>
         </div>
-      </TintedCard>
+      </div>
 
-      <SectionTitle title="よく使う機能" desc="教師ホームのカード配色に寄せて、淡いグラデーションと対応色でそろえています。質問系・教材系など、対応する機能は同系色で統一しています。" />
+      <SectionTitle title="よく使う機能" desc="教師ホームと同じカードデザインで、日常的に使う入口をそろえています。対応する機能どうしは同系色で統一しています。" />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <GradientLinkCard
+        <TeacherHomeActionCard
           href="/student/assignments"
           title="課題一覧"
           desc="先生から届いた課題の一覧です。詳細ページから進捗を入力し、提出状況を確認できます。"
-          action="開く"
-          className="border-emerald-200/90 bg-gradient-to-br from-emerald-100 via-white to-teal-100"
-          actionClass="text-emerald-700"
+          theme="theme-blue"
         />
-        <GradientLinkCard
+        <TeacherHomeActionCard
           href="/student/self-study"
           title="自主学習"
           desc="自分で進める問題集を登録し、現在地を記録します。課題とは別に学習の蓄積を残せます。"
-          action="開く"
-          className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100"
-          actionClass="text-sky-700"
+          theme="theme-violet"
         />
-        <GradientLinkCard
+        <TeacherHomeActionCard
           href="/student/questions"
           title="質問"
           desc="先生への質問と返信をスレッド形式で確認できます。学習中の疑問をそのまま残せます。"
-          action="開く"
-          className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100"
-          actionClass="text-pink-700"
+          theme="theme-rose"
         />
-        <GradientLinkCard
+        <TeacherHomeActionCard
           href="/student/books"
           title="教材置き場"
           desc="図、動画、補助資料を見直せます。授業や課題の復習にも使える教材の入口です。"
-          action="開く"
-          className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100"
-          actionClass="text-amber-700"
+          theme="theme-indigo"
         />
-        <TintedCard className="border-violet-200/90 bg-gradient-to-br from-violet-100 via-white to-fuchsia-100">
-          <div className="text-lg font-semibold text-gray-900">予定カレンダー</div>
-          <p className="mt-2 text-sm leading-6 text-gray-600">共有テスト予定と自分用テスト予定をまとめて見返せます。直近14日の件数は {upcoming.length} 件です。</p>
-          <div className="mt-5 text-sm font-medium text-violet-700">下へスクロールして確認</div>
-        </TintedCard>
-        <TintedCard className="border-slate-200/90 bg-gradient-to-br from-slate-100 via-white to-gray-100">
-          <div className="text-lg font-semibold text-gray-900">現在のクラス</div>
-          <p className="mt-2 text-sm leading-6 text-gray-600">現在の所属クラスは {classText} です。共有予定や配布内容の表示対象として使われます。</p>
-          <div className="mt-5 text-sm font-medium text-slate-700">現在の表示対象を確認</div>
-        </TintedCard>
+        <GradientNoteCard
+          title="予定カレンダー"
+          desc={`共有テスト予定と自分用テスト予定をまとめて見返せます。直近14日の件数は ${upcoming.length} 件です。`}
+          actionText="下へスクロールして確認"
+          className="border-violet-200/90 bg-gradient-to-br from-violet-100 via-white to-fuchsia-100"
+          actionClass="text-violet-700"
+        />
+        <GradientNoteCard
+          title="現在のクラス"
+          desc={`現在の所属クラスは ${classText} です。共有予定や配布内容の表示対象として使われます。`}
+          actionText="現在の表示対象を確認"
+          className="border-slate-200/90 bg-gradient-to-br from-slate-100 via-white to-gray-100"
+          actionClass="text-slate-700"
+        />
       </div>
 
       <SectionTitle title="現在の見通し" desc="課題、自主学習、予定を四つのカードでまとめて確認できます。" />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <TintedCard className="border-emerald-200 bg-emerald-50">
-          <div className="text-sm text-gray-500">配布中の課題</div>
-          <div className="mt-3 text-4xl font-bold text-gray-900">{assignmentSummary.length}</div>
-          <p className="mt-2 text-sm text-gray-600">いま取り組める課題の数です。</p>
-        </TintedCard>
-        <TintedCard className="border-cyan-200 bg-cyan-50">
-          <div className="text-sm text-gray-500">自主学習の問題集</div>
-          <div className="mt-3 text-4xl font-bold text-gray-900">{selfStudySummary.totalBooks}</div>
-          <p className="mt-2 text-sm text-gray-600">この端末で登録している冊数です。</p>
-        </TintedCard>
-        <TintedCard className="border-pink-200 bg-pink-50">
-          <div className="text-sm text-gray-500">共有テスト予定</div>
-          <div className="mt-3 text-4xl font-bold text-gray-900">{sharedTests.length}</div>
-          <p className="mt-2 text-sm text-gray-600">先生から共有されている予定です。</p>
-        </TintedCard>
-        <TintedCard className="border-amber-200 bg-amber-50">
-          <div className="text-sm text-gray-500">直近14日</div>
-          <div className="mt-3 text-4xl font-bold text-gray-900">{upcoming.length}</div>
-          <p className="mt-2 text-sm text-gray-600">今日から2週間の予定件数です。</p>
-        </TintedCard>
+        <GradientInfoCard
+          title="配布中の課題"
+          value={assignmentSummary.length}
+          desc="いま取り組める課題の数です。"
+          className="border-emerald-200/90 bg-gradient-to-br from-emerald-100 via-white to-teal-100"
+          valueClass="text-emerald-700"
+        />
+        <GradientInfoCard
+          title="自主学習の問題集"
+          value={selfStudySummary.totalBooks}
+          desc="この端末で登録している冊数です。"
+          className="border-cyan-200/90 bg-gradient-to-br from-cyan-100 via-white to-blue-100"
+          valueClass="text-sky-700"
+        />
+        <GradientInfoCard
+          title="共有テスト予定"
+          value={sharedTests.length}
+          desc="先生から共有されている予定です。"
+          className="border-pink-200/90 bg-gradient-to-br from-pink-100 via-white to-fuchsia-100"
+          valueClass="text-pink-700"
+        />
+        <GradientInfoCard
+          title="直近14日"
+          value={upcoming.length}
+          desc="今日から2週間の予定件数です。"
+          className="border-amber-200/90 bg-gradient-to-br from-amber-100 via-white to-orange-100"
+          valueClass="text-amber-700"
+        />
       </div>
 
       <SectionTitle title="課題の進み具合" desc="課題範囲の帯を残したまま、自分がどこまで進んだかを同じバーで見られる形にしています。" />
