@@ -1,0 +1,555 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { apiDelete, apiGet, apiPost } from "@/lib/api";
+import { getUserFromToken, logout } from "@/lib/auth";
+import { MonthCalendar, type CalendarEvent, toYMDLocal } from "@/lib/month-calendar";
+
+type AssignmentRow = {
+  id: string;
+  title: string;
+  status: "open" | "closed" | "archived";
+  due_at: string | null;
+  created_at: string;
+  class_ids?: string[];
+};
+
+type ClassListResp = {
+  classIds: string[];
+};
+
+type SharedTestRow = {
+  id: string;
+  title: string;
+  event_date: string;
+  class_ids: string[];
+  created_at: string;
+  created_by: string | null;
+};
+
+type LocalEvent = {
+  id: string;
+  date: string;
+  title: string;
+  kind: "test";
+};
+
+const LS_KEY_LOCAL = "hw_calendar_events_teacher_local";
+
+const readLocalEvents = (): LocalEvent[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_LOCAL);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x) => x && typeof x.date === "string" && typeof x.title === "string")
+      .map((x) => ({
+        id: String(x.id ?? crypto.randomUUID()),
+        date: x.date,
+        title: x.title,
+        kind: "test" as const,
+      }));
+  } catch {
+    return [];
+  }
+};
+
+const writeLocalEvents = (events: LocalEvent[]) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_LOCAL, JSON.stringify(events));
+};
+
+function SectionTitle({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="space-y-1">
+      <h2 className="text-2xl font-bold tracking-tight text-gray-900">{title}</h2>
+      <p className="text-sm text-gray-600">{desc}</p>
+    </div>
+  );
+}
+
+function GradientPanel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-[28px] border border-white/70 p-5 shadow-sm ring-1 ring-black/5 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function InnerCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`rounded-2xl bg-white/85 p-4 ring-1 ring-black/5 ${className}`}>{children}</div>;
+}
+
+function ActionCard({
+  href,
+  title,
+  desc,
+  gradient,
+}: {
+  href: string;
+  title: string;
+  desc: string;
+  gradient: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`group rounded-[24px] border border-white/70 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${gradient}`}
+    >
+      <div className="text-lg font-semibold text-gray-900">{title}</div>
+      <p className="mt-2 text-sm leading-6 text-gray-700">{desc}</p>
+      <div className="mt-4 text-sm font-medium text-gray-700">開く</div>
+    </Link>
+  );
+}
+
+function OverviewMetric({
+  title,
+  value,
+  desc,
+  gradient,
+}: {
+  title: string;
+  value: React.ReactNode;
+  desc: string;
+  gradient: string;
+}) {
+  return (
+    <div className={`rounded-[24px] border border-white/70 p-5 shadow-sm ring-1 ring-black/5 ${gradient}`}>
+      <div className="text-sm font-medium text-gray-600">{title}</div>
+      <div className="mt-2 text-3xl font-bold tracking-tight text-gray-900">{value}</div>
+      <p className="mt-2 text-sm leading-6 text-gray-700">{desc}</p>
+    </div>
+  );
+}
+
+export default function TeacherHomePage() {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [user, setUser] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [localTests, setLocalTests] = useState<LocalEvent[]>([]);
+  const [localTitle, setLocalTitle] = useState("定期テスト");
+  const [localDate, setLocalDate] = useState("");
+  const [classIds, setClassIds] = useState<string[]>([]);
+  const [sharedTests, setSharedTests] = useState<SharedTestRow[]>([]);
+  const [sharedTitle, setSharedTitle] = useState("定期テスト");
+  const [sharedDate, setSharedDate] = useState("");
+  const [sharedSelected, setSharedSelected] = useState<Set<string>>(new Set(["ALL"]));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setUser(getUserFromToken());
+    setLocalTests(readLocalEvents());
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (!user) {
+      router.replace("/login?role=teacher");
+      return;
+    }
+    if (user.role !== "teacher") {
+      setErr("教師アカウントではありません。");
+      router.replace("/student");
+      return;
+    }
+    setErr(null);
+  }, [ready, user, router]);
+
+  const load = async () => {
+    if (!ready || !user || user.role !== "teacher") return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const [a, cls, tests] = await Promise.all([
+        apiGet(`/teacher/assignments?status=all`),
+        apiGet(`/teacher/classes`),
+        apiGet(`/calendar/tests`),
+      ]);
+      setAssignments(Array.isArray(a) ? a : []);
+      setClassIds(((cls as ClassListResp | null)?.classIds ?? []).map(String));
+      setSharedTests(Array.isArray(tests) ? tests : []);
+    } catch (e: any) {
+      const msg = String(e?.message ?? "読み込みエラー");
+      if (msg.includes("401")) {
+        logout("teacher");
+        router.replace("/login?role=teacher");
+        return;
+      }
+      setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, user?.uid, user?.role]);
+
+  const addLocalTest = () => {
+    const title = localTitle.trim();
+    if (!title) return setErr("（ローカル）テスト名を入力してください。");
+    if (!localDate) return setErr("（ローカル）日付を選択してください。");
+    setErr(null);
+    const next: LocalEvent[] = [
+      ...localTests,
+      { id: crypto.randomUUID(), date: localDate, title, kind: "test" as const },
+    ].sort((a, b) => (a.date === b.date ? a.title.localeCompare(b.title, "ja") : a.date.localeCompare(b.date)));
+    setLocalTests(next);
+    writeLocalEvents(next);
+    setLocalDate("");
+  };
+
+  const removeLocalTest = (id: string) => {
+    const next = localTests.filter((t) => t.id !== id);
+    setLocalTests(next);
+    writeLocalEvents(next);
+  };
+
+  const toggleSharedClass = (cid: string) => {
+    setSharedSelected((prev) => {
+      const next = new Set(prev);
+      if (cid === "ALL") {
+        if (next.has("ALL")) next.delete("ALL");
+        else {
+          next.clear();
+          next.add("ALL");
+        }
+        return next;
+      }
+      if (next.has("ALL")) next.delete("ALL");
+      if (next.has(cid)) next.delete(cid);
+      else next.add(cid);
+      return next;
+    });
+  };
+
+  const addSharedTest = async () => {
+    const title = sharedTitle.trim();
+    if (!title) return setErr("（共有）テスト名を入力してください。");
+    if (!sharedDate) return setErr("（共有）日付を選択してください。");
+    if (sharedSelected.size === 0) return setErr("（共有）配信クラスを選択してください。");
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost(`/teacher/test-events`, {
+        title,
+        date: sharedDate,
+        classIds: Array.from(sharedSelected),
+      });
+      setSharedDate("");
+      setSharedSelected(new Set(["ALL"]));
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message ?? "（共有）登録に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteSharedTest = async (id: string) => {
+    const ok = window.confirm("この共有テスト予定を削除します。よろしいですか？");
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiDelete(`/teacher/test-events/${encodeURIComponent(id)}`);
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message ?? "（共有）削除に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const calendarEvents: CalendarEvent[] = useMemo(() => {
+    const dueEvents: CalendarEvent[] = assignments
+      .filter((a) => !!a.due_at)
+      .map((a) => ({
+        id: `due-${a.id}`,
+        date: toYMDLocal(a.due_at!),
+        title: `〖課題期限〗${a.title}`,
+        kind: "due" as const,
+      }));
+    const shared: CalendarEvent[] = sharedTests.map((t) => ({
+      id: `shared-test-${t.id}`,
+      date: t.event_date,
+      title: `〖テスト（共有）〗${t.title}`,
+      kind: "test" as const,
+    }));
+    const local: CalendarEvent[] = localTests.map((t) => ({
+      id: `local-test-${t.id}`,
+      date: t.date,
+      title: `〖テスト（ローカル）〗${t.title}`,
+      kind: "test" as const,
+    }));
+    return [...dueEvents, ...shared, ...local];
+  }, [assignments, sharedTests, localTests]);
+
+  const upcoming = useMemo(() => {
+    const today = new Date();
+    const start = toYMDLocal(today);
+    const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 14);
+    const end = toYMDLocal(endDate);
+    return calendarEvents
+      .filter((e) => e.date >= start && e.date <= end)
+      .slice()
+      .sort((a, b) => (a.date === b.date ? a.title.localeCompare(b.title, "ja") : a.date.localeCompare(b.date)));
+  }, [calendarEvents]);
+
+  const dashboard = useMemo(() => {
+    const openAssignments = assignments.filter((a) => a.status === "open");
+    const closedAssignments = assignments.filter((a) => a.status === "closed");
+    const today = new Date();
+    const limitDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7);
+    const limitYmd = toYMDLocal(limitDate);
+    const nearDueAssignments = openAssignments
+      .filter((a) => a.due_at)
+      .map((a) => ({ ...a, dueDate: toYMDLocal(a.due_at!) }))
+      .filter((a) => a.dueDate <= limitYmd)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const upcomingTests = sharedTests
+      .filter((t) => t.event_date >= toYMDLocal(today))
+      .slice()
+      .sort((a, b) => a.event_date.localeCompare(b.event_date));
+
+    return {
+      openAssignments,
+      closedAssignments,
+      nearDueAssignments,
+      upcomingTests,
+      noteItems: [
+        nearDueAssignments.length > 0 ? `今週の期限付き課題が ${nearDueAssignments.length} 件あります。` : "今週の期限付き課題はありません。",
+        upcomingTests.length > 0 ? `次の共有テストは ${upcomingTests[0].event_date} です。` : "共有テスト予定は未登録です。",
+        closedAssignments.length > 0 ? `停止中の課題が ${closedAssignments.length} 件あります。整理対象の確認に向いています。` : "停止中の課題はありません。",
+      ],
+    };
+  }, [assignments, sharedTests]);
+
+  if (!ready) return <div className="p-6 text-sm text-gray-600">認証確認中...</div>;
+  if (!user) return <div className="p-6 text-sm text-gray-600">ログインへ遷移中...</div>;
+
+  return (
+    <div className="space-y-10 p-4 md:p-6">
+      <div className="space-y-2">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">教師ホーム</h1>
+        <p className="text-sm text-gray-600">配布、確認、分析、教材管理までを一画面で見渡せるよう整理しました。</p>
+      </div>
+
+      {err ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{err}</div>
+      ) : null}
+      {busy ? (
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">処理中...</div>
+      ) : null}
+
+      <div className="space-y-4">
+        <SectionTitle title="よく使う機能" desc="主要な遷移は、色付きのカードをそのまま押して開けます。" />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <ActionCard href="/teacher/templates" title="課題配布" desc="テンプレートを作成し、複数クラスへ配布できます。" gradient="bg-gradient-to-br from-sky-100 via-white to-cyan-100" />
+          <ActionCard href="/teacher/assignments" title="提出状況" desc="配布済み課題の一覧確認、停止、編集、削除を行います。" gradient="bg-gradient-to-br from-violet-100 via-white to-fuchsia-100" />
+          <ActionCard href="/teacher/analysis" title="分析" desc="クラス別の進捗や理解度を見て、指導の優先度を整理します。" gradient="bg-gradient-to-br from-emerald-100 via-white to-teal-100" />
+          <ActionCard href="/teacher/books" title="問題集管理" desc="教材データの登録、章や大問の整理、出題の確認を行います。" gradient="bg-gradient-to-br from-amber-100 via-white to-orange-100" />
+          <ActionCard href="/teacher/questions" title="質問対応" desc="生徒から届いた質問に返信し、解決済みの管理も行えます。" gradient="bg-gradient-to-br from-rose-100 via-white to-pink-100" />
+          <ActionCard href="/teacher/materials" title="教材置き場" desc="図、動画、補助教材を登録し、授業用ライブラリを整えます。" gradient="bg-gradient-to-br from-indigo-100 via-white to-blue-100" />
+          <ActionCard href="/teacher/students" title="生徒管理" desc="クラスごとの生徒登録、編集、一括追加をここで行います。" gradient="bg-gradient-to-br from-slate-100 via-white to-zinc-100" />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <SectionTitle
+          title="運用の見通し"
+          desc="数だけでなく、次に確認すべき予定と整理ポイントが一目で分かる形にまとめました。"
+        />
+        <div className="grid gap-4 lg:grid-cols-4">
+          <OverviewMetric
+            title="本日の確認"
+            value={dashboard.nearDueAssignments.length}
+            desc="7日以内に期限が来る配布中課題です。"
+            gradient="bg-gradient-to-br from-emerald-100 via-white to-teal-100"
+          />
+          <OverviewMetric
+            title="配布の状況"
+            value={dashboard.openAssignments.length}
+            desc="現在生徒が取り組んでいる課題数です。"
+            gradient="bg-gradient-to-br from-sky-100 via-white to-cyan-100"
+          />
+          <OverviewMetric
+            title="予定の状況"
+            value={sharedTests.length}
+            desc="生徒へ配信される共有テスト予定件数です。"
+            gradient="bg-gradient-to-br from-violet-100 via-white to-fuchsia-100"
+          />
+          <OverviewMetric
+            title="対象クラス"
+            value={classIds.length}
+            desc="現在配布対象として扱えるクラス数です。"
+            gradient="bg-gradient-to-br from-amber-100 via-white to-orange-100"
+          />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <GradientPanel className="bg-gradient-to-br from-indigo-100 via-white to-sky-100">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">直近の予定一覧</div>
+                <p className="mt-1 text-sm text-gray-600">期限付き課題と共有テストを優先して見直せます。</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {upcoming.length === 0 ? (
+                <InnerCard className="text-sm text-gray-600">直近の予定はありません。</InnerCard>
+              ) : (
+                upcoming.slice(0, 8).map((e) => (
+                  <InnerCard key={e.id}>
+                    <div className="font-semibold text-gray-900">{e.title}</div>
+                    <div className="mt-1 text-sm text-gray-600">{e.date}</div>
+                  </InnerCard>
+                ))
+              )}
+            </div>
+          </GradientPanel>
+          <GradientPanel className="bg-gradient-to-br from-slate-100 via-white to-blue-100">
+            <div className="text-lg font-semibold text-gray-900">運用メモ</div>
+            <p className="mt-1 text-sm text-gray-600">今すぐ意識したい確認事項を短くまとめています。</p>
+            <div className="mt-4 space-y-3">
+              {dashboard.noteItems.map((item, index) => (
+                <InnerCard key={`${index}-${item}`}>
+                  <div className="text-sm leading-6 text-gray-700">{item}</div>
+                </InnerCard>
+              ))}
+              <InnerCard>
+                <div className="text-sm leading-6 text-gray-700">
+                  停止中の課題: <span className="font-semibold text-gray-900">{dashboard.closedAssignments.length} 件</span>
+                </div>
+              </InnerCard>
+            </div>
+          </GradientPanel>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <SectionTitle title="カレンダー" desc="課題期限とテスト予定をひとつの月表示で確認します。" />
+        <GradientPanel className="bg-gradient-to-br from-indigo-100 via-white to-sky-100">
+          <InnerCard className="p-3 md:p-4">
+            <MonthCalendar events={calendarEvents} />
+          </InnerCard>
+        </GradientPanel>
+      </div>
+
+      <div className="space-y-4">
+        <SectionTitle title="予定の管理" desc="共有予定と個人用メモを、カレンダーと同じトーンで整理できます。" />
+        <GradientPanel className="bg-gradient-to-br from-indigo-100 via-white to-sky-100">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <InnerCard>
+              <div className="text-lg font-semibold text-gray-900">共有テスト予定（生徒へ配信）</div>
+              <p className="mt-2 text-sm text-gray-600">ここで登録した予定は、生徒側カレンダーにも表示されます。</p>
+              <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_180px]">
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2"
+                  value={sharedTitle}
+                  onChange={(e) => setSharedTitle(e.target.value)}
+                  placeholder="テスト名"
+                />
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2"
+                  type="date"
+                  value={sharedDate}
+                  onChange={(e) => setSharedDate(e.target.value)}
+                />
+              </div>
+              <div className="mt-4">
+                <div className="text-sm font-medium text-gray-700">配信クラス（複数選択）</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <label className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-2 text-sm">
+                    <input type="checkbox" checked={sharedSelected.has("ALL")} onChange={() => toggleSharedClass("ALL")} />
+                    ALL
+                  </label>
+                  {classIds.map((c) => (
+                    <label key={c} className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-2 text-sm">
+                      <input type="checkbox" checked={sharedSelected.has(c)} onChange={() => toggleSharedClass(c)} />
+                      {c}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-60"
+                  onClick={addSharedTest}
+                  disabled={busy}
+                >
+                  共有テストを追加
+                </button>
+              </div>
+              <div className="mt-4 space-y-3">
+                {sharedTests.length === 0 ? (
+                  <div className="rounded-xl bg-slate-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">共有テスト予定は未登録です。</div>
+                ) : (
+                  sharedTests.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-black/5">
+                      <div>
+                        <div className="font-semibold text-gray-900">{t.title}</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          {t.event_date} / 配信: {(t.class_ids ?? []).join(", ")}
+                        </div>
+                      </div>
+                      <button className="text-sm text-gray-500 underline" onClick={() => deleteSharedTest(t.id)} disabled={busy}>
+                        削除
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </InnerCard>
+
+            <InnerCard>
+              <div className="text-lg font-semibold text-gray-900">ローカルテスト予定（この端末のみ）</div>
+              <p className="mt-2 text-sm text-gray-600">個人メモ用です。共有はされません。</p>
+              <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_180px_auto]">
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2"
+                  value={localTitle}
+                  onChange={(e) => setLocalTitle(e.target.value)}
+                  placeholder="テスト名"
+                />
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2"
+                  type="date"
+                  value={localDate}
+                  onChange={(e) => setLocalDate(e.target.value)}
+                />
+                <button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700" onClick={addLocalTest}>
+                  追加
+                </button>
+              </div>
+              <div className="mt-4 space-y-3">
+                {localTests.length === 0 ? (
+                  <div className="rounded-xl bg-slate-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">ローカル予定は未登録です。</div>
+                ) : (
+                  localTests.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-black/5">
+                      <div>
+                        <div className="font-semibold text-gray-900">{t.title}</div>
+                        <div className="mt-1 text-sm text-gray-600">{t.date}</div>
+                      </div>
+                      <button className="text-sm text-gray-500 underline" onClick={() => removeLocalTest(t.id)}>
+                        削除
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </InnerCard>
+          </div>
+        </GradientPanel>
+      </div>
+    </div>
+  );
+}

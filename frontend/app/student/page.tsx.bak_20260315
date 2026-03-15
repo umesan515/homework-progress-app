@@ -1,0 +1,850 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { apiGet } from "@/lib/api";
+import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
+import { MonthCalendar, type CalendarEvent, toYMDLocal } from "@/lib/month-calendar";
+
+type AssignmentRow = {
+  id: string;
+  title: string;
+  status: string;
+  due_at: string | null;
+  created_at: string;
+  total?: number;
+  maru?: number;
+  sankaku?: number;
+  batsu?: number;
+  done?: number;
+  pct?: number;
+  tag?: string | null;
+};
+
+type SharedTestRow = {
+  id: string;
+  title: string;
+  event_date: string;
+  class_ids: string[];
+  created_at: string;
+  created_by: string | null;
+};
+
+type LocalEvent = {
+  id: string;
+  date: string;
+  title: string;
+  kind: "test";
+};
+
+type SelfStudyBook = {
+  id: string;
+  title: string;
+  totalUnits: number;
+  currentUnit: number;
+  note: string;
+  updatedAt: string;
+};
+
+type SubmissionPayload = {
+  submission: unknown | null;
+  marksByAttempt?: Record<string, unknown>;
+  markedAtByAttempt?: Record<string, Record<string, string>>;
+  firstMarkedAtByLabel?: Record<string, string>;
+  statusByLabel?: Record<string, string>;
+  timeByLabel?: Record<string, string>;
+};
+
+const LS_KEY_LOCAL = "hw_calendar_events_student_local";
+const LS_KEY_SELF_STUDY = "hw_student_self_study_books_v1";
+const LS_KEY_SELF_STUDY_DAILY = "hw_student_self_study_daily_unique_v1";
+
+const formatDue = (dueAt: string | null) => {
+  if (!dueAt) return "無期限";
+  const d = new Date(dueAt);
+  return `${d.toLocaleDateString("ja-JP")} まで`;
+};
+
+const pct = (done: number, total: number) => {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+};
+
+const safeNum = (v: unknown, fallback = 0) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const readLocalEvents = (): LocalEvent[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_LOCAL);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x) => x && typeof x.date === "string" && typeof x.title === "string")
+      .map((x) => ({
+        id: String(x.id ?? crypto.randomUUID()),
+        date: x.date,
+        title: x.title,
+        kind: "test" as const,
+      }));
+  } catch {
+    return [];
+  }
+};
+
+const writeLocalEvents = (events: LocalEvent[]) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_LOCAL, JSON.stringify(events));
+};
+
+const readSelfStudyBooks = (): SelfStudyBook[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_SELF_STUDY);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((x) => ({
+        id: String(x?.id ?? crypto.randomUUID()),
+        title: String(x?.title ?? ""),
+        totalUnits: Math.max(1, safeNum(x?.totalUnits, 1)),
+        currentUnit: Math.max(0, safeNum(x?.currentUnit, 0)),
+        note: String(x?.note ?? ""),
+        updatedAt: String(x?.updatedAt ?? new Date().toISOString()),
+      }))
+      .filter((x) => x.title.trim());
+  } catch {
+    return [];
+  }
+};
+
+const writeSelfStudyBooks = (rows: SelfStudyBook[]) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_SELF_STUDY, JSON.stringify(rows));
+};
+
+const todayKey = () => toYMDLocal(new Date());
+
+const range = (start: number, end: number) => {
+  if (end < start) return [] as number[];
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+};
+
+const readDailyUniqueMap = (): Record<string, string[]> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LS_KEY_SELF_STUDY_DAILY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([k, v]) => [k, Array.isArray(v) ? v.map((x) => String(x)) : []]),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const writeDailyUniqueMap = (value: Record<string, string[]>) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY_SELF_STUDY_DAILY, JSON.stringify(value));
+};
+
+const recordSelfStudyPractice = (bookId: string, units: number[]) => {
+  if (typeof window === "undefined" || units.length === 0) return 0;
+  const dateKey = todayKey();
+  const current = readDailyUniqueMap();
+  const todaySet = new Set(current[dateKey] ?? []);
+  const before = todaySet.size;
+  for (const unit of units) {
+    if (unit > 0) todaySet.add(`${bookId}:${unit}`);
+  }
+  current[dateKey] = Array.from(todaySet);
+  writeDailyUniqueMap(current);
+  return todaySet.size - before;
+};
+
+const readTodaySelfStudyPracticeCount = () => {
+  const current = readDailyUniqueMap();
+  return (current[todayKey()] ?? []).length;
+};
+
+const collectTodayAssignmentProblemKeys = (
+  assignmentId: string,
+  payload: SubmissionPayload | null | undefined,
+) => {
+  const out = new Set<string>();
+  if (!payload) return out;
+  const day = todayKey();
+  const first = payload.firstMarkedAtByLabel ?? {};
+  for (const [label, iso] of Object.entries(first)) {
+    if (iso && toYMDLocal(new Date(iso)) === day) out.add(`${assignmentId}:${label}`);
+  }
+  const stamped = payload.markedAtByAttempt ?? {};
+  for (const byLabel of Object.values(stamped)) {
+    if (!byLabel) continue;
+    for (const [label, iso] of Object.entries(byLabel)) {
+      if (iso && toYMDLocal(new Date(iso)) === day) out.add(`${assignmentId}:${label}`);
+    }
+  }
+  return out;
+};
+
+function WhiteCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`rounded-[28px] bg-white p-5 shadow-sm ring-1 ring-black/5 ${className}`}>{children}</div>;
+}
+
+function SoftPanel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-[28px] border border-white/70 p-5 shadow-sm ring-1 ring-black/5 ${className}`}>{children}</div>
+  );
+}
+
+function SectionTitle({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="space-y-1">
+      <h2 className="text-2xl font-bold tracking-tight text-gray-900">{title}</h2>
+      <p className="text-sm text-gray-600">{desc}</p>
+    </div>
+  );
+}
+
+function ProgressBar({ value, colorClass = "bg-emerald-500" }: { value: number; colorClass?: string }) {
+  return (
+    <div className="h-2.5 overflow-hidden rounded-full bg-gray-100">
+      <div className={`h-full rounded-full transition-all ${colorClass}`} style={{ width: `${value}%` }} />
+    </div>
+  );
+}
+
+function AssignmentRangeBar({ total, done }: { total: number; done: number }) {
+  const donePct = pct(done, total);
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-sm text-gray-600">
+        <span>課題範囲 {done} / {total} 問</span>
+        <span>{donePct}%</span>
+      </div>
+      <ProgressBar value={donePct} colorClass="bg-emerald-500" />
+      <div className="flex items-center justify-between text-xs text-gray-400">
+        <span>課題の先頭</span>
+        <span>課題の終わり</span>
+      </div>
+    </div>
+  );
+}
+
+function MiniBarChart({
+  items,
+}: {
+  items: Array<{ label: string; value: number; colorClass: string; textClass: string; note: string; emptyText?: string }>;
+}) {
+  const numericValues = items.filter((item) => item.value > 0).map((item) => item.value);
+  const maxValue = Math.max(1, ...numericValues);
+  return (
+    <div className="space-y-3">
+      {items.map((item) => {
+        const width = item.value <= 0 ? 0 : Math.max(14, Math.round((item.value / maxValue) * 100));
+        return (
+          <div key={item.label} className="grid grid-cols-[112px_1fr_auto] items-center gap-3">
+            <div className="text-sm font-medium text-gray-700">{item.label}</div>
+            <div className="h-3 overflow-hidden rounded-full bg-white/80 ring-1 ring-black/5">
+              <div className={`h-full rounded-full ${item.colorClass}`} style={{ width: `${width}%` }} />
+            </div>
+            <div className={`text-sm font-semibold ${item.textClass}`}>{item.value > 0 ? item.value : item.emptyText ?? "0"}</div>
+            <div className="col-start-2 text-xs text-gray-500">{item.note}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SoftInfoCard({
+  title,
+  desc,
+  value,
+  className,
+  valueClass,
+}: {
+  title: string;
+  desc: string;
+  value: React.ReactNode;
+  className: string;
+  valueClass: string;
+}) {
+  return (
+    <div className={`rounded-[24px] border border-white/70 p-5 shadow-sm ring-1 ring-black/5 ${className}`}>
+      <div className="text-sm font-medium text-gray-600">{title}</div>
+      <div className={`mt-2 text-3xl font-bold tracking-tight ${valueClass}`}>{value}</div>
+      <p className="mt-2 text-sm leading-6 text-gray-700">{desc}</p>
+    </div>
+  );
+}
+
+export default function StudentHomePage() {
+  const router = useRouter();
+  const calendarRef = useRef<HTMLDivElement | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState<JwtUser | null>(null);
+  const [rows, setRows] = useState<AssignmentRow[]>([]);
+  const [sharedTests, setSharedTests] = useState<SharedTestRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [localTests, setLocalTests] = useState<LocalEvent[]>([]);
+  const [localTitle, setLocalTitle] = useState("定期テスト");
+  const [localDate, setLocalDate] = useState("");
+  const [selfStudyBooks, setSelfStudyBooks] = useState<SelfStudyBook[]>([]);
+  const [submissionMap, setSubmissionMap] = useState<Record<string, SubmissionPayload | null>>({});
+  const [todaySelfStudyCount, setTodaySelfStudyCount] = useState(0);
+  const [showLearningDetails, setShowLearningDetails] = useState(false);
+  const [selfStudyTitle, setSelfStudyTitle] = useState("");
+  const [selfStudyTotal, setSelfStudyTotal] = useState("");
+  const [selfStudyCurrent, setSelfStudyCurrent] = useState("");
+  const [selfStudyNote, setSelfStudyNote] = useState("");
+
+  useEffect(() => {
+    const u = getUserFromToken();
+    setUser(u as JwtUser | null);
+    setAuthChecked(true);
+    setLocalTests(readLocalEvents());
+    setSelfStudyBooks(readSelfStudyBooks());
+    setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    if (!user) {
+      router.replace("/login?role=student");
+      return;
+    }
+    if (user.role !== "student") {
+      router.replace("/teacher");
+    }
+  }, [authChecked, user, router]);
+
+  const load = async () => {
+    setErr(null);
+    setRows([]);
+    setSharedTests([]);
+    setSubmissionMap({});
+    if (!authChecked || !user || user.role !== "student") return;
+    const [list, tests] = await Promise.all([apiGet("/student/assignments"), apiGet("/calendar/tests")]);
+    const nextRows = Array.isArray(list) ? (list as AssignmentRow[]) : [];
+    setRows(nextRows);
+    setSharedTests(Array.isArray(tests) ? (tests as SharedTestRow[]) : []);
+    const submissionEntries = await Promise.all(
+      nextRows.map(async (row) => {
+        try {
+          const payload = (await apiGet(`/submissions?assignmentId=${encodeURIComponent(row.id)}`)) as SubmissionPayload;
+          return [row.id, payload ?? null] as const;
+        } catch {
+          return [row.id, null] as const;
+        }
+      }),
+    );
+    setSubmissionMap(Object.fromEntries(submissionEntries));
+  };
+
+  useEffect(() => {
+    load().catch((e: any) => {
+      const msg = String(e?.message ?? "読み込みエラー");
+      if (msg.includes("401")) {
+        logout("student");
+        router.replace("/login?role=student");
+        return;
+      }
+      setErr(msg);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, user?.uid, user?.classId, user?.role]);
+
+  const addLocalTest = () => {
+    const title = localTitle.trim();
+    if (!title) return setErr("（ローカル）テスト名を入力してください。");
+    if (!localDate) return setErr("（ローカル）日付を選択してください。");
+    setErr(null);
+    const next: LocalEvent[] = [
+      ...localTests,
+      { id: crypto.randomUUID(), date: localDate, title, kind: "test" as const },
+    ].sort((a, b) => (a.date === b.date ? a.title.localeCompare(b.title, "ja") : a.date.localeCompare(b.date)));
+    setLocalTests(next);
+    writeLocalEvents(next);
+    setLocalDate("");
+  };
+
+  const removeLocalTest = (id: string) => {
+    const next = localTests.filter((t) => t.id !== id);
+    setLocalTests(next);
+    writeLocalEvents(next);
+  };
+
+  const addSelfStudyBook = () => {
+    const title = selfStudyTitle.trim();
+    const totalUnits = Math.max(1, safeNum(selfStudyTotal, 0));
+    const currentUnit = Math.max(0, Math.min(totalUnits, safeNum(selfStudyCurrent, 0)));
+    if (!title) return setErr("自主学習用の問題集名を入力してください。");
+    if (!selfStudyTotal.trim()) return setErr("問題集全体の量（ページ数や問題数）を入力してください。");
+    setErr(null);
+    const id = crypto.randomUUID();
+    const next: SelfStudyBook[] = [
+      {
+        id,
+        title,
+        totalUnits,
+        currentUnit,
+        note: selfStudyNote.trim(),
+        updatedAt: new Date().toISOString(),
+      },
+      ...selfStudyBooks,
+    ];
+    setSelfStudyBooks(next);
+    writeSelfStudyBooks(next);
+    if (currentUnit > 0) {
+      recordSelfStudyPractice(id, range(1, currentUnit));
+      setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
+    }
+    setSelfStudyTitle("");
+    setSelfStudyTotal("");
+    setSelfStudyCurrent("");
+    setSelfStudyNote("");
+  };
+
+  const updateSelfStudyBook = (id: string, nextCurrent: number) => {
+    const currentRow = selfStudyBooks.find((row) => row.id === id);
+    const nextValue = currentRow ? Math.max(0, Math.min(currentRow.totalUnits, nextCurrent)) : 0;
+    const next = selfStudyBooks.map((row) =>
+      row.id === id ? { ...row, currentUnit: nextValue, updatedAt: new Date().toISOString() } : row,
+    );
+    setSelfStudyBooks(next);
+    writeSelfStudyBooks(next);
+    if (currentRow && nextValue > currentRow.currentUnit) {
+      recordSelfStudyPractice(id, range(currentRow.currentUnit + 1, nextValue));
+      setTodaySelfStudyCount(readTodaySelfStudyPracticeCount());
+    }
+  };
+
+  const removeSelfStudyBook = (id: string) => {
+    const next = selfStudyBooks.filter((row) => row.id !== id);
+    setSelfStudyBooks(next);
+    writeSelfStudyBooks(next);
+  };
+
+  const scrollToCalendar = () => {
+    calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const classText = useMemo(() => (user?.classId ? user.classId : "未設定"), [user?.classId]);
+
+  const calendarEvents: CalendarEvent[] = useMemo(() => {
+    const dueEvents: CalendarEvent[] = rows
+      .filter((r) => !!r.due_at)
+      .map((r) => ({
+        id: `due-${r.id}`,
+        date: toYMDLocal(r.due_at!),
+        title: `〖課題〗${r.title}`,
+        kind: "due" as const,
+      }));
+    const shared: CalendarEvent[] = sharedTests.map((t) => ({
+      id: `shared-test-${t.id}`,
+      date: t.event_date,
+      title: `〖テスト（共有）〗${t.title}`,
+      kind: "test" as const,
+    }));
+    const local: CalendarEvent[] = localTests.map((t) => ({
+      id: `local-test-${t.id}`,
+      date: t.date,
+      title: `〖テスト（ローカル）〗${t.title}`,
+      kind: "test" as const,
+    }));
+    return [...dueEvents, ...shared, ...local];
+  }, [rows, sharedTests, localTests]);
+
+  const upcoming = useMemo(() => {
+    const today = new Date();
+    const start = toYMDLocal(today);
+    const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 14);
+    const end = toYMDLocal(endDate);
+    return calendarEvents
+      .filter((e) => e.date >= start && e.date <= end)
+      .slice()
+      .sort((a, b) => (a.date === b.date ? a.title.localeCompare(b.title, "ja") : a.date.localeCompare(b.date)));
+  }, [calendarEvents]);
+
+  const assignmentSummary = useMemo(() => {
+    return rows.map((r) => {
+      const total = Math.max(0, safeNum(r.total, 0));
+      const done = Math.max(0, Math.min(total || 0, safeNum(r.done, 0)));
+      const understanding = Math.max(0, Math.min(100, safeNum(r.pct, pct(done, total || 1))));
+      const dueDate = r.due_at ? toYMDLocal(r.due_at) : null;
+      return {
+        ...r,
+        total,
+        done,
+        remaining: Math.max(0, total - done),
+        understanding,
+        dueText: formatDue(r.due_at),
+        dueDate,
+      };
+    });
+  }, [rows]);
+
+  const selfStudySummary = useMemo(() => {
+    const totalBooks = selfStudyBooks.length;
+    const activeBooks = selfStudyBooks.filter((row) => row.currentUnit > 0).length;
+    return { totalBooks, activeBooks };
+  }, [selfStudyBooks]);
+
+  const learningOverview = useMemo(() => {
+    const assignmentPracticeKeys = new Set<string>();
+    for (const row of assignmentSummary) {
+      const payload = submissionMap[row.id] ?? null;
+      for (const key of collectTodayAssignmentProblemKeys(row.id, payload)) {
+        assignmentPracticeKeys.add(key);
+      }
+    }
+    const dueRows = assignmentSummary.filter((row) => !!row.due_at);
+    const remainingDueCount = dueRows.reduce((sum, row) => sum + row.remaining, 0);
+    return {
+      todayPracticeCount: assignmentPracticeKeys.size + todaySelfStudyCount,
+      remainingDueCount,
+      hasDueAssignments: dueRows.length > 0,
+    };
+  }, [assignmentSummary, submissionMap, todaySelfStudyCount]);
+
+  if (!authChecked) return <div className="p-6 text-sm text-gray-600">認証確認中...</div>;
+  if (!user) return <div className="p-6 text-sm text-gray-600">ログインへ遷移中...</div>;
+
+  return (
+    <div className="space-y-10 p-4 md:p-6">
+      <div className="space-y-2">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">生徒ホーム</h1>
+        <p className="text-sm text-gray-600">課題、自主学習、テスト予定を一画面で見渡せるようまとめています。</p>
+      </div>
+
+      {err ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{err}</div>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <SoftInfoCard
+          title="所属クラス"
+          value={classText}
+          desc="ログイン中のクラス表示です。"
+          className="bg-gradient-to-br from-slate-100 via-white to-zinc-100"
+          valueClass="text-gray-900"
+        />
+        <SoftInfoCard
+          title="今日の演習実績"
+          value={learningOverview.todayPracticeCount}
+          desc="今日記録した問題数の累積です。"
+          className="bg-gradient-to-br from-emerald-100 via-white to-teal-100"
+          valueClass="text-emerald-700"
+        />
+        <SoftInfoCard
+          title="期限課題の残り"
+          value={learningOverview.remainingDueCount}
+          desc={learningOverview.hasDueAssignments ? "期限のある課題の残り問題数です。" : "期限付き課題はありません。"}
+          className="bg-gradient-to-br from-amber-100 via-white to-orange-100"
+          valueClass="text-amber-700"
+        />
+      </div>
+
+      <div className="space-y-4">
+        <SectionTitle
+          title="学習進捗"
+          desc="今日の演習実績と、期限のある課題の残り題数を確認できます。必要なときだけ詳細を開いて見通しを確かめられる形にしています。"
+        />
+        <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <SoftPanel className="bg-gradient-to-br from-emerald-100 via-white to-teal-100">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">今日の演習実績</div>
+                <p className="mt-2 text-sm text-gray-600">
+                  その日に入力した問題数の累積表示と、課題の残り問題数を棒グラフで確認できます。
+                </p>
+              </div>
+              <button
+                onClick={() => setShowLearningDetails((prev) => !prev)}
+                className="rounded-xl border border-emerald-200 bg-white/90 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-white"
+              >
+                {showLearningDetails ? "学習の見通し詳細を閉じる" : "学習の見通し詳細を開く"}
+              </button>
+            </div>
+            <div className="mt-4 rounded-2xl bg-white/80 p-4 ring-1 ring-black/5">
+              <MiniBarChart
+                items={[
+                  {
+                    label: "今日の演習",
+                    value: learningOverview.todayPracticeCount,
+                    colorClass: "bg-emerald-500",
+                    textClass: "text-emerald-700",
+                    note: "今日入力した課題・自主学習の合計です。",
+                  },
+                  {
+                    label: "期限課題残り",
+                    value: learningOverview.remainingDueCount,
+                    colorClass: "bg-amber-500",
+                    textClass: "text-amber-700",
+                    note: "期限付き課題の残り題数です。",
+                  },
+                ]}
+              />
+            </div>
+            {showLearningDetails ? (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {assignmentSummary.filter((r) => r.due_at).length === 0 ? (
+                  <div className="rounded-2xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5 md:col-span-2">
+                    期限付き課題はありません。
+                  </div>
+                ) : (
+                  assignmentSummary
+                    .filter((r) => r.due_at)
+                    .slice(0, 6)
+                    .map((r) => (
+                      <div key={r.id} className="rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                        <div className="font-semibold text-gray-900">{r.title}</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          {r.dueText} {r.tag ? <span className="ml-1">{r.tag}</span> : null}
+                        </div>
+                        <div className="mt-3">
+                          <AssignmentRangeBar total={Math.max(1, r.total)} done={r.done} />
+                        </div>
+                      </div>
+                    ))
+                )}
+              </div>
+            ) : null}
+          </SoftPanel>
+
+          <SoftPanel className="bg-gradient-to-br from-sky-100 via-white to-cyan-100">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">カレンダーへ</div>
+                <p className="mt-2 text-sm text-gray-600">期限とテスト予定を月表示で確認できます。</p>
+              </div>
+              <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700" onClick={scrollToCalendar}>
+                開く
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {upcoming.length === 0 ? (
+                <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5">直近の予定はありません。</div>
+              ) : (
+                upcoming.slice(0, 4).map((e) => (
+                  <div key={e.id} className="rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                    <div className="font-semibold text-gray-900">{e.title}</div>
+                    <div className="mt-1 text-sm text-gray-600">{e.date}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          </SoftPanel>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
+        <SoftPanel className="bg-gradient-to-br from-emerald-100 via-white to-teal-100">
+          <div className="text-lg font-semibold text-gray-900">配布中の課題</div>
+          <p className="mt-2 text-sm text-gray-600">先生が配布した課題の進み具合と理解度の目安を確認できます。</p>
+          <div className="mt-4 space-y-4">
+            {assignmentSummary.length === 0 ? (
+              <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                配布中の課題はありません。先生が課題を配布するとここに表示されます。
+              </div>
+            ) : (
+              assignmentSummary.slice(0, 6).map((r) => (
+                <div key={r.id} className="rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-gray-900">{r.title}</div>
+                      <div className="mt-1 text-sm text-gray-600">
+                        {r.dueText} {r.tag ? <span className="ml-1">{r.tag}</span> : null}
+                      </div>
+                    </div>
+                    <Link
+                      href={`/student/assignments/${r.id}`}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50"
+                    >
+                      進捗を入力する
+                    </Link>
+                  </div>
+                  <div className="mt-4">
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="text-gray-600">理解度の目安</span>
+                      <span className="font-semibold text-emerald-700">{r.understanding}%</span>
+                    </div>
+                    <AssignmentRangeBar total={Math.max(1, r.total)} done={r.done} />
+                    <div className="mt-3 text-sm text-gray-600">{r.done} / {r.total} 問題を記録済みです。</div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </SoftPanel>
+
+        <div className="space-y-4">
+          <SoftPanel className="bg-gradient-to-br from-sky-100 via-white to-cyan-100">
+            <div className="text-lg font-semibold text-gray-900">自主学習の問題集を登録</div>
+            <p className="mt-2 text-sm text-gray-600">ページ数でも問題数でもよいので、全体量と現在地を入力します。</p>
+            <div className="mt-4 grid gap-4">
+              <input
+                className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+                value={selfStudyTitle}
+                onChange={(e) => setSelfStudyTitle(e.target.value)}
+                placeholder="例: 青チャート 数学I"
+              />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <input
+                  className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+                  value={selfStudyTotal}
+                  onChange={(e) => setSelfStudyTotal(e.target.value)}
+                  placeholder="例: 180"
+                />
+                <input
+                  className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+                  value={selfStudyCurrent}
+                  onChange={(e) => setSelfStudyCurrent(e.target.value)}
+                  placeholder="例: 36"
+                />
+              </div>
+              <input
+                className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+                value={selfStudyNote}
+                onChange={(e) => setSelfStudyNote(e.target.value)}
+                placeholder="例: 週末は例題を中心に進める"
+              />
+              <div className="flex justify-end">
+                <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700" onClick={addSelfStudyBook}>
+                  登録する
+                </button>
+              </div>
+            </div>
+          </SoftPanel>
+
+          <SoftPanel className="border-sky-200/90 bg-gradient-to-br from-sky-100 via-white to-cyan-100">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">登録中の自主学習</div>
+                <p className="mt-1 text-sm text-gray-600">課題とは別の、自分用の進捗欄です。</p>
+              </div>
+              <Link href="/student/self-study" className="rounded-xl border border-white/80 bg-white/90 px-4 py-2 text-sm font-medium hover:bg-white">
+                一覧で開く
+              </Link>
+            </div>
+            <div className="mt-3 rounded-2xl bg-white/70 px-4 py-3 text-sm text-gray-600 ring-1 ring-black/5">
+              登録中 {selfStudySummary.totalBooks} 冊 / 進行中 {selfStudySummary.activeBooks} 冊
+            </div>
+            <div className="mt-4 space-y-4">
+              {selfStudyBooks.length === 0 ? (
+                <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5">まだ問題集は登録されていません。</div>
+              ) : (
+                selfStudyBooks.slice(0, 4).map((row) => {
+                  const progress = pct(row.currentUnit, row.totalUnits);
+                  return (
+                    <div key={row.id} className="rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-gray-900">{row.title}</div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {row.currentUnit} / {row.totalUnits}
+                          </div>
+                        </div>
+                        <button className="text-xs text-gray-500 underline" onClick={() => removeSelfStudyBook(row.id)}>
+                          削除
+                        </button>
+                      </div>
+                      <div className="mt-3">
+                        <ProgressBar value={progress} colorClass="bg-sky-500" />
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm hover:bg-gray-50" onClick={() => updateSelfStudyBook(row.id, row.currentUnit - 1)}>
+                          -1
+                        </button>
+                        <button className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm hover:bg-gray-50" onClick={() => updateSelfStudyBook(row.id, row.currentUnit + 1)}>
+                          +1
+                        </button>
+                        <div className="ml-auto text-sm font-medium text-sky-700">{progress}%</div>
+                      </div>
+                      {row.note ? <p className="mt-3 text-sm text-gray-600">{row.note}</p> : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </SoftPanel>
+        </div>
+      </div>
+
+      <div ref={calendarRef} className="space-y-4">
+        <SectionTitle title="カレンダー" desc="課題期限とテスト予定をまとめて確認します。" />
+        <SoftPanel className="bg-gradient-to-br from-sky-100 via-white to-cyan-100">
+          <WhiteCard className="bg-white/90 p-3 md:p-4">
+            <MonthCalendar events={calendarEvents} />
+          </WhiteCard>
+        </SoftPanel>
+      </div>
+
+      <SectionTitle title="テスト予定" desc="共有予定と自分用メモを一緒に管理できます。" />
+      <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+        <SoftPanel className="bg-gradient-to-br from-amber-100 via-white to-orange-100">
+          <div className="text-lg font-semibold text-gray-900">ローカルテスト予定（この端末のみ）</div>
+          <p className="mt-2 text-sm text-gray-600">自分用のメモです。ほかの端末や先生には共有されません。</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_180px_auto]">
+            <input
+              className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+              value={localTitle}
+              onChange={(e) => setLocalTitle(e.target.value)}
+              placeholder="テスト名"
+            />
+            <input
+              className="rounded-xl border border-white/90 bg-white/90 px-3 py-2"
+              type="date"
+              value={localDate}
+              onChange={(e) => setLocalDate(e.target.value)}
+            />
+            <button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700" onClick={addLocalTest}>
+              追加
+            </button>
+          </div>
+          <div className="mt-4 space-y-3">
+            {localTests.length === 0 ? (
+              <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5">ローカル予定は未登録です。</div>
+            ) : (
+              localTests.map((t) => (
+                <div key={t.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                  <div>
+                    <div className="font-semibold text-gray-900">{t.title}</div>
+                    <div className="mt-1 text-sm text-gray-600">{t.date}</div>
+                  </div>
+                  <button className="text-sm text-gray-500 underline" onClick={() => removeLocalTest(t.id)}>
+                    削除
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </SoftPanel>
+
+        <SoftPanel className="bg-gradient-to-br from-pink-100 via-white to-fuchsia-100">
+          <div className="text-lg font-semibold text-gray-900">直近14日（今日〜）</div>
+          <p className="mt-2 text-sm text-gray-600">近い予定を日付順で見直せます。</p>
+          <div className="mt-4 space-y-3">
+            {upcoming.length === 0 ? (
+              <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-600 ring-1 ring-black/5">直近の予定はありません。</div>
+            ) : (
+              upcoming.map((e) => (
+                <div key={e.id} className="rounded-2xl bg-white/85 p-4 ring-1 ring-black/5">
+                  <div className="font-semibold text-gray-900">{e.title}</div>
+                  <div className="mt-1 text-sm text-gray-600">{e.date}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </SoftPanel>
+      </div>
+    </div>
+  );
+}
