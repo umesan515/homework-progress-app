@@ -1,109 +1,35 @@
-const express = require("express");
-const multer = require("multer");
 const path = require("path");
-const dotenv = require("dotenv");
-const cors = require("cors");
-const helmet = require("helmet");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
+const fs = require("fs");
 
-const { PORT, resolvedUploadsRoot, JWT_SECRET, JWT_EXPIRES_IN } = require("./src/config/env");
-const { pool } = require("./src/config/db");
-const { buildUploadPaths, ensureUploadDirs } = require("./src/config/paths");
-const { createAuthMiddleware } = require("./src/middleware/auth");
-const { newId, nowIso } = require("./src/utils/ids");
-const { createDbGuards } = require("./src/utils/db-guards");
-const { createAuthService } = require("./src/services/auth-service");
-const { createRuntimeMigrations } = require("./src/services/runtime-migrations");
-const { createSchoolClassesService } = require("./src/services/school-classes-service");
-const { createMaterialsService } = require("./src/services/materials-service");
+const { createBaseAppRuntime } = require("./src/app");
 const { createAuthRouter } = require("./src/routes/auth.routes");
 const { createTeacherCoreRouter } = require("./src/routes/teacher-core.routes");
 const { createTeacherMaterialsRouter } = require("./src/routes/teacher-materials.routes");
-const { createUploadFactories } = require("./src/uploads/factories");
+const { registerBaseRoutes } = require("./src/routes");
 
-dotenv.config();
-
-const app = express();
-
-const uploadPaths = buildUploadPaths(resolvedUploadsRoot);
-ensureUploadDirs(uploadPaths);
-
-// --- uploads (question images) ---
-const uploadsRoot = uploadPaths.uploadsRoot;
-const questionUploadsDir = uploadPaths.questionUploadsDir;
-const materialUploadsDir = uploadPaths.materialUploadsDir;
-const materialImageDir = uploadPaths.materialImageDir;
-const materialVideoDir = uploadPaths.materialVideoDir;
-const materialThumbDir = uploadPaths.materialThumbDir;
-const materialAppDir = uploadPaths.materialAppDir;
-
+const runtime = createBaseAppRuntime();
 const {
+  app,
+  pool,
+  PORT,
+  JWT_SECRET,
+  uploadsRoot,
+  questionUploadsDir,
   materialImageUpload,
   materialThumbUpload,
   materialVideoUpload,
   materialAppUpload,
   questionUpload,
-} = createUploadFactories({
-  multer,
-  path,
-  questionUploadsDir,
-  materialImageDir,
-  materialThumbDir,
-  materialVideoDir,
-  materialAppDir,
-});
-app.use(helmet({ crossOriginResourcePolicy: false }));
-
-const corsOrigins = String(process.env.CORS_ORIGIN || "")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || corsOrigins.length === 0 || corsOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("cors_not_allowed"));
-  },
-}));
-app.use(express.json({ limit: "10mb" }));
-
-// =========================
-// DB/runtime services
-// =========================
-const { tableAvailable, isMissingRelationError, isPermissionError, isSafeSchemaError } = createDbGuards(pool);
-const { requireAuth, requireRole } = createAuthMiddleware({ jwt, jwtSecret: JWT_SECRET });
-const { ensureMaterialsTables, ensureBookClassesTable } = createRuntimeMigrations(pool);
-const {
-  readSchoolClassesStore,
-  writeSchoolClassesStore,
-  removeSchoolClassFromStore,
-  ensureSchoolClassesTable,
-  upsertSchoolClass,
-} = createSchoolClassesService({
-  pool,
+  tableAvailable,
+  isMissingRelationError,
+  isPermissionError,
   isSafeSchemaError,
-  storePath: path.join(__dirname, "data", "school_classes_fallback.json"),
-});
-const {
-  normalizeSubject,
-  isValidMaterialType,
-  isValidInteractiveKind,
-  normalizeMaterialClassIds,
-  readMaterialById,
-  listTeacherMaterials,
-  listStudentMaterials,
-} = createMaterialsService({
-  pool,
-  ensureMaterialsTables,
-});
-
-const authService = createAuthService({
-  pool,
-  bcrypt,
-  jwt,
-  jwtSecret: JWT_SECRET,
-  jwtExpiresIn: JWT_EXPIRES_IN,
-});
+  requireAuth,
+  requireRole,
+  authService,
+  newId,
+  nowIso,
+} = runtime;
 const {
   detectUserColumns,
   findUserByUid,
@@ -154,6 +80,120 @@ const teacherMaterialsRouter = createTeacherMaterialsRouter({
   },
 });
 
+
+// =========================
+// DB: lightweight migrations (runtime safety)
+// =========================
+let __bookClassesReady = false;
+let __materialsReady = false;
+let __schoolClassesReady = false;
+let __schoolClassesAvailable = null;
+const schoolClassesStorePath = path.join(__dirname, "data", "school_classes_fallback.json");
+
+function ensureParentDir(filePath) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  } catch (_e) {}
+}
+
+function readSchoolClassesStore() {
+  try {
+    const raw = fs.readFileSync(schoolClassesStorePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((v) => String(v || "").trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
+  } catch (_e) {
+    return [];
+  }
+}
+
+function writeSchoolClassesStore(classIds) {
+  const normalized = Array.from(new Set((classIds || []).map((v) => String(v || "").trim()).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
+  ensureParentDir(schoolClassesStorePath);
+  fs.writeFileSync(schoolClassesStorePath, JSON.stringify(normalized, null, 2), "utf8");
+}
+
+function addSchoolClassToStore(classId) {
+  const normalized = String(classId || "").trim();
+  if (!normalized) return;
+  const current = readSchoolClassesStore();
+  if (current.includes(normalized)) return;
+  current.push(normalized);
+  writeSchoolClassesStore(current);
+}
+
+function removeSchoolClassFromStore(classId) {
+  const normalized = String(classId || "").trim();
+  if (!normalized) return;
+  writeSchoolClassesStore(readSchoolClassesStore().filter((v) => v !== normalized));
+}
+
+async function ensureMaterialsTables() {
+  if (__materialsReady) return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS materials (id text PRIMARY KEY, title text NOT NULL, description text, subject text NOT NULL DEFAULT 'other', unit_name text, grade_level text, material_type text NOT NULL, content_url text, thumbnail_url text, interactive_kind text, interactive_config jsonb, is_published boolean NOT NULL DEFAULT false, created_by text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS material_class_targets (material_id text NOT NULL REFERENCES materials(id) ON DELETE CASCADE, class_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (material_id, class_id))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS material_targets_class_idx ON material_class_targets(class_id)`);
+  __materialsReady = true;
+}
+async function ensureBookClassesTable() {
+  if (__bookClassesReady) return;
+  // 既存環境でも壊れないように IF NOT EXISTS
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS book_classes (
+      book_id    text NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      class_id   text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (book_id, class_id)
+    )`
+  );
+  await pool.query(`CREATE INDEX IF NOT EXISTS book_classes_class_idx ON book_classes(class_id)`);
+  __bookClassesReady = true;
+}
+
+async function ensureSchoolClassesTable() {
+  if (__schoolClassesReady) return true;
+  if (__schoolClassesAvailable === false) return false;
+  try {
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS school_classes (
+        class_id text PRIMARY KEY,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`
+    );
+    __schoolClassesReady = true;
+    __schoolClassesAvailable = true;
+    return true;
+  } catch (e) {
+    if (isSafeSchemaError(e)) {
+      __schoolClassesAvailable = false;
+      console.warn("[school_classes] unavailable, using file fallback", e?.code || e?.message || e);
+      return false;
+    }
+    throw e;
+  }
+}
+
+async function upsertSchoolClass(classId) {
+  const normalized = String(classId ?? "").trim();
+  if (!normalized) return false;
+  addSchoolClassToStore(normalized);
+  const available = await ensureSchoolClassesTable();
+  if (!available) return false;
+  await pool.query(
+    `INSERT INTO school_classes (class_id, updated_at)
+     VALUES ($1, now())
+     ON CONFLICT (class_id)
+     DO UPDATE SET updated_at = now()`,
+    [normalized]
+  );
+  return true;
+}
+
 // moved to ./src/utils/ids
 
 function isValidMark(x) {
@@ -179,22 +219,42 @@ function isValidTemplateMode(x) {
   return x === "book" || x === "manual";
 }
 
+function isValidSubject(x) {
+  // UI側の教科選択と合わせる
+  return (
+    x === "math" ||
+    x === "english" ||
+    x === "japanese" ||
+    x === "science" ||
+    x === "social" ||
+    x === "informatics" ||
+    x === "other"
+  );
+}
+
+function normalizeSubject(x) {
+  const s = String(x ?? "").trim();
+  if (!s) return "other";
+  return isValidSubject(s) ? s : "other";
+}
+
+function isValidMaterialType(x) { return x === "image" || x === "video" || x === "interactive" || x === "app"; }
+function isValidInteractiveKind(x) { return x === null || x === undefined || x === "" || x === "linear" || x === "parabola" || x === "bars"; }
+function normalizeMaterialClassIds(input) { if (!Array.isArray(input)) return []; return Array.from(new Set(input.map((x) => String(x ?? "").trim()).filter(Boolean))).sort(); }
+async function readMaterialById(client, id) { const r = await client.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.id = $1 GROUP BY m.id`, [id]); return r.rows[0] ?? null; }
+async function listTeacherMaterials() { await ensureMaterialsTables(); const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`); return r.rows; }
+async function listStudentMaterials(classId) { await ensureMaterialsTables(); const params = []; let visibility = "NOT EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id)"; if (classId) { params.push(classId); visibility = `${visibility} OR EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id AND t2.class_id = $1)`; } const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.is_published = true AND (${visibility}) GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`, params); return r.rows; }
 function materialUploadHandler(upload, routePath, urlPrefix) { app.post(routePath, requireAuth, requireRole("teacher"), (req, res) => { upload.single("file")(req, res, (err) => { if (err) { const msg = String(err?.message || err || "upload_error"); const status = msg.includes("invalid_file_type") ? 400 : 500; return res.status(status).json({ error: msg }); } if (!req.file) return res.status(400).json({ error: "missing_file" }); return res.json({ ok: true, url: `${urlPrefix}/${req.file.filename}`, filename: req.file.filename, mimetype: req.file.mimetype, size: req.file.size }); }); }); }
 
 // moved to ./src/services/auth-service
 
-app.use("/auth", authRouter);
-app.use("/teacher", teacherCoreRouter);
-app.use("/teacher", teacherMaterialsRouter);
-
-app.get("/health", async (_req, res) => {
-  try {
-    const r = await pool.query("SELECT 1 AS ok");
-    res.json({ ok: true, db: r.rows[0].ok === 1, time: nowIso() });
-  } catch (e) {
-    console.error("[health]", e);
-    res.status(500).json({ ok: false, error: "db_connect_failed" });
-  }
+registerBaseRoutes({
+  app,
+  authRouter,
+  teacherCoreRouter,
+  teacherMaterialsRouter,
+  pool,
+  nowIso,
 });
 
 /**
@@ -3119,7 +3179,7 @@ app.post(
   }
 );
 
-const port = process.env.PORT || 4000;
+const port = PORT;
 
 /**
  * =========================
