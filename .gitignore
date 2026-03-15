@@ -1,6 +1,6 @@
 ﻿_git_tmp/
 _git_tmp2/
 **/node_modules/
-homework-api/uploads/
-homework-progress-app/.next/
+backend/uploads/
+frontend/.next/
 .env

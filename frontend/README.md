@@ -4,8 +4,8 @@
 
 ## 構成
 
-- `homework-progress-app/`: Next.js フロントエンド
-- `homework-api/`: Express + PostgreSQL バックエンド
+- `frontend/`: Next.js フロントエンド
+- `backend/`: Express + PostgreSQL バックエンド
 - `db/`: SQL スキーマ
 - `docker/`: 開発用 PostgreSQL の例
 
@@ -16,14 +16,14 @@
 - `.env` / `.env.local`
 - `node_modules`
 - `.next`
-- `homework-api/uploads/`
+- `backend/uploads/`
 
 セットアップ時は、各ディレクトリの `.env.example` をコピーして `.env` または `.env.local` を作成してください。
 
 ## バックエンド起動
 
 ```bash
-cd homework-api
+cd backend
 npm install
 cp .env.example .env
 node server.js
@@ -32,7 +32,7 @@ node server.js
 ## フロントエンド起動
 
 ```bash
-cd homework-progress-app
+cd frontend
 # package.json がある環境で npm install
 cp .env.example .env.local
 npm run dev
@@ -42,4 +42,4 @@ npm run dev
 
 - 公開前に `JWT_SECRET` を必ず変更してください。
 - PostgreSQL 接続情報は `.env` に置いてください。
-- `homework-api/uploads/` はサーバー側で作成してください。
+- `backend/uploads/` はサーバー側で作成してください。
