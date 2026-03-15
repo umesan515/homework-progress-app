@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const dotenv = require("dotenv");
+dotenv.config();
 const cors = require("cors");
 const helmet = require("helmet");
 const bcrypt = require("bcrypt");
@@ -16,8 +17,6 @@ const { createAuthService } = require("./services/auth-service");
 const { newId, nowIso } = require("./utils/ids");
 
 function createBaseAppRuntime() {
-  dotenv.config();
-
   const app = express();
 
   const uploadPaths = buildUploadPaths(resolvedUploadsRoot);
