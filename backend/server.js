@@ -1,7 +1,6 @@
 const express = require("express");
 const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -15,7 +14,13 @@ const { createAuthMiddleware } = require("./src/middleware/auth");
 const { newId, nowIso } = require("./src/utils/ids");
 const { createDbGuards } = require("./src/utils/db-guards");
 const { createAuthService } = require("./src/services/auth-service");
+const { createRuntimeMigrations } = require("./src/services/runtime-migrations");
+const { createSchoolClassesService } = require("./src/services/school-classes-service");
+const { createMaterialsService } = require("./src/services/materials-service");
 const { createAuthRouter } = require("./src/routes/auth.routes");
+const { createTeacherCoreRouter } = require("./src/routes/teacher-core.routes");
+const { createTeacherMaterialsRouter } = require("./src/routes/teacher-materials.routes");
+const { createUploadFactories } = require("./src/uploads/factories");
 
 dotenv.config();
 
@@ -33,45 +38,20 @@ const materialVideoDir = uploadPaths.materialVideoDir;
 const materialThumbDir = uploadPaths.materialThumbDir;
 const materialAppDir = uploadPaths.materialAppDir;
 
-const makeDiskUpload = (destinationDir, fileSize, allowFile) =>
-  multer({
-    storage: multer.diskStorage({
-      destination: function (_req, _file, cb) { cb(null, destinationDir); },
-      filename: function (_req, file, cb) {
-        const safeBase = path.basename(file.originalname || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
-        const ext = path.extname(safeBase).slice(0, 20);
-        const stem = path.basename(safeBase, ext).slice(0, 60) || "file";
-        cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}_${stem}${ext}`);
-      },
-    }),
-    limits: { fileSize },
-    fileFilter: function (req, file, cb) {
-      try { if (!allowFile(file)) return cb(new Error("invalid_file_type")); cb(null, true); } catch (e) { cb(e); }
-    },
-  });
-
-const materialImageUpload = makeDiskUpload(materialImageDir, 10 * 1024 * 1024, (file) => String(file.mimetype || "").startsWith("image/"));
-const materialThumbUpload = makeDiskUpload(materialThumbDir, 10 * 1024 * 1024, (file) => String(file.mimetype || "").startsWith("image/"));
-const materialVideoUpload = makeDiskUpload(materialVideoDir, 250 * 1024 * 1024, (file) => /^video\/(mp4|webm|ogg)/.test(String(file.mimetype || "")));
-const materialAppUpload = makeDiskUpload(materialAppDir, 20 * 1024 * 1024, (file) => {
-  const mime = String(file.mimetype || "").toLowerCase();
-  const ext = path.extname(file.originalname || "").toLowerCase();
-  return mime === "text/html" || ext === ".html" || ext === ".htm";
-});
-
-const questionUpload = multer({
-  storage: multer.diskStorage({
-    destination: function (req, file, cb) {
-      cb(null, questionUploadsDir);
-    },
-    filename: function (req, file, cb) {
-      const ext = path.extname(file.originalname || "").slice(0, 16);
-      cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`);
-    },
-  }),
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  },
+const {
+  materialImageUpload,
+  materialThumbUpload,
+  materialVideoUpload,
+  materialAppUpload,
+  questionUpload,
+} = createUploadFactories({
+  multer,
+  path,
+  questionUploadsDir,
+  materialImageDir,
+  materialThumbDir,
+  materialVideoDir,
+  materialAppDir,
 });
 app.use(helmet({ crossOriginResourcePolicy: false }));
 
@@ -87,8 +67,36 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10mb" }));
 
+// =========================
+// DB/runtime services
+// =========================
 const { tableAvailable, isMissingRelationError, isPermissionError, isSafeSchemaError } = createDbGuards(pool);
 const { requireAuth, requireRole } = createAuthMiddleware({ jwt, jwtSecret: JWT_SECRET });
+const { ensureMaterialsTables, ensureBookClassesTable } = createRuntimeMigrations(pool);
+const {
+  readSchoolClassesStore,
+  writeSchoolClassesStore,
+  removeSchoolClassFromStore,
+  ensureSchoolClassesTable,
+  upsertSchoolClass,
+} = createSchoolClassesService({
+  pool,
+  isSafeSchemaError,
+  storePath: path.join(__dirname, "data", "school_classes_fallback.json"),
+});
+const {
+  normalizeSubject,
+  isValidMaterialType,
+  isValidInteractiveKind,
+  normalizeMaterialClassIds,
+  readMaterialById,
+  listTeacherMaterials,
+  listStudentMaterials,
+} = createMaterialsService({
+  pool,
+  ensureMaterialsTables,
+});
+
 const authService = createAuthService({
   pool,
   bcrypt,
@@ -96,121 +104,55 @@ const authService = createAuthService({
   jwtSecret: JWT_SECRET,
   jwtExpiresIn: JWT_EXPIRES_IN,
 });
+const {
+  detectUserColumns,
+  findUserByUid,
+  findAnyUserByLoginId,
+  upsertStudentUser,
+  updateStudentUser,
+  upsertUserAuth,
+  removeMemoryAuthUserByUid,
+} = authService;
 const authRouter = createAuthRouter({ authService, requireAuth, requireRole });
+const teacherCoreRouter = createTeacherCoreRouter({
+  pool,
+  bcrypt,
+  requireAuth,
+  requireRole,
+  deps: {
+    detectUserColumns,
+    ensureSchoolClassesTable,
+    readSchoolClassesStore,
+    writeSchoolClassesStore,
+    upsertSchoolClass,
+    findUserByUid,
+    findAnyUserByLoginId,
+    upsertStudentUser,
+    updateStudentUser,
+    upsertUserAuth,
+    removeMemoryAuthUserByUid,
+    removeSchoolClassFromStore,
+    tableAvailable,
+    isSafeSchemaError,
+  },
+});
 
-
-// =========================
-// DB: lightweight migrations (runtime safety)
-// =========================
-let __bookClassesReady = false;
-let __materialsReady = false;
-let __schoolClassesReady = false;
-let __schoolClassesAvailable = null;
-const schoolClassesStorePath = path.join(__dirname, "data", "school_classes_fallback.json");
-
-function ensureParentDir(filePath) {
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  } catch (_e) {}
-}
-
-function readSchoolClassesStore() {
-  try {
-    const raw = fs.readFileSync(schoolClassesStorePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((v) => String(v || "").trim())
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
-  } catch (_e) {
-    return [];
-  }
-}
-
-function writeSchoolClassesStore(classIds) {
-  const normalized = Array.from(new Set((classIds || []).map((v) => String(v || "").trim()).filter(Boolean)))
-    .sort((a, b) => a.localeCompare(b, "ja", { numeric: true, sensitivity: "base" }));
-  ensureParentDir(schoolClassesStorePath);
-  fs.writeFileSync(schoolClassesStorePath, JSON.stringify(normalized, null, 2), "utf8");
-}
-
-function addSchoolClassToStore(classId) {
-  const normalized = String(classId || "").trim();
-  if (!normalized) return;
-  const current = readSchoolClassesStore();
-  if (current.includes(normalized)) return;
-  current.push(normalized);
-  writeSchoolClassesStore(current);
-}
-
-function removeSchoolClassFromStore(classId) {
-  const normalized = String(classId || "").trim();
-  if (!normalized) return;
-  writeSchoolClassesStore(readSchoolClassesStore().filter((v) => v !== normalized));
-}
-
-async function ensureMaterialsTables() {
-  if (__materialsReady) return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS materials (id text PRIMARY KEY, title text NOT NULL, description text, subject text NOT NULL DEFAULT 'other', unit_name text, grade_level text, material_type text NOT NULL, content_url text, thumbnail_url text, interactive_kind text, interactive_config jsonb, is_published boolean NOT NULL DEFAULT false, created_by text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS material_class_targets (material_id text NOT NULL REFERENCES materials(id) ON DELETE CASCADE, class_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (material_id, class_id))`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS material_targets_class_idx ON material_class_targets(class_id)`);
-  __materialsReady = true;
-}
-async function ensureBookClassesTable() {
-  if (__bookClassesReady) return;
-  // 既存環境でも壊れないように IF NOT EXISTS
-  await pool.query(
-    `CREATE TABLE IF NOT EXISTS book_classes (
-      book_id    text NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-      class_id   text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (book_id, class_id)
-    )`
-  );
-  await pool.query(`CREATE INDEX IF NOT EXISTS book_classes_class_idx ON book_classes(class_id)`);
-  __bookClassesReady = true;
-}
-
-async function ensureSchoolClassesTable() {
-  if (__schoolClassesReady) return true;
-  if (__schoolClassesAvailable === false) return false;
-  try {
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS school_classes (
-        class_id text PRIMARY KEY,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      )`
-    );
-    __schoolClassesReady = true;
-    __schoolClassesAvailable = true;
-    return true;
-  } catch (e) {
-    if (isSafeSchemaError(e)) {
-      __schoolClassesAvailable = false;
-      console.warn("[school_classes] unavailable, using file fallback", e?.code || e?.message || e);
-      return false;
-    }
-    throw e;
-  }
-}
-
-async function upsertSchoolClass(classId) {
-  const normalized = String(classId ?? "").trim();
-  if (!normalized) return false;
-  addSchoolClassToStore(normalized);
-  const available = await ensureSchoolClassesTable();
-  if (!available) return false;
-  await pool.query(
-    `INSERT INTO school_classes (class_id, updated_at)
-     VALUES ($1, now())
-     ON CONFLICT (class_id)
-     DO UPDATE SET updated_at = now()`,
-    [normalized]
-  );
-  return true;
-}
+const teacherMaterialsRouter = createTeacherMaterialsRouter({
+  pool,
+  requireAuth,
+  requireRole,
+  deps: {
+    newId,
+    ensureMaterialsTables,
+    listTeacherMaterials,
+    readMaterialById,
+    normalizeMaterialClassIds,
+    normalizeSubject,
+    isValidMaterialType,
+    isValidInteractiveKind,
+    isSafeSchemaError,
+  },
+});
 
 // moved to ./src/utils/ids
 
@@ -237,36 +179,13 @@ function isValidTemplateMode(x) {
   return x === "book" || x === "manual";
 }
 
-function isValidSubject(x) {
-  // UI側の教科選択と合わせる
-  return (
-    x === "math" ||
-    x === "english" ||
-    x === "japanese" ||
-    x === "science" ||
-    x === "social" ||
-    x === "informatics" ||
-    x === "other"
-  );
-}
-
-function normalizeSubject(x) {
-  const s = String(x ?? "").trim();
-  if (!s) return "other";
-  return isValidSubject(s) ? s : "other";
-}
-
-function isValidMaterialType(x) { return x === "image" || x === "video" || x === "interactive" || x === "app"; }
-function isValidInteractiveKind(x) { return x === null || x === undefined || x === "" || x === "linear" || x === "parabola" || x === "bars"; }
-function normalizeMaterialClassIds(input) { if (!Array.isArray(input)) return []; return Array.from(new Set(input.map((x) => String(x ?? "").trim()).filter(Boolean))).sort(); }
-async function readMaterialById(client, id) { const r = await client.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.id = $1 GROUP BY m.id`, [id]); return r.rows[0] ?? null; }
-async function listTeacherMaterials() { await ensureMaterialsTables(); const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`); return r.rows; }
-async function listStudentMaterials(classId) { await ensureMaterialsTables(); const params = []; let visibility = "NOT EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id)"; if (classId) { params.push(classId); visibility = `${visibility} OR EXISTS (SELECT 1 FROM material_class_targets t2 WHERE t2.material_id = m.id AND t2.class_id = $1)`; } const r = await pool.query(`SELECT m.id, m.title, m.description, m.subject, m.unit_name, m.grade_level, m.material_type, m.content_url, m.thumbnail_url, m.interactive_kind, m.interactive_config, m.is_published, m.created_by, m.created_at, m.updated_at, COALESCE(array_remove(array_agg(t.class_id ORDER BY t.class_id), NULL), '{}') AS class_ids FROM materials m LEFT JOIN material_class_targets t ON t.material_id = m.id WHERE m.is_published = true AND (${visibility}) GROUP BY m.id ORDER BY m.updated_at DESC, m.created_at DESC`, params); return r.rows; }
 function materialUploadHandler(upload, routePath, urlPrefix) { app.post(routePath, requireAuth, requireRole("teacher"), (req, res) => { upload.single("file")(req, res, (err) => { if (err) { const msg = String(err?.message || err || "upload_error"); const status = msg.includes("invalid_file_type") ? 400 : 500; return res.status(status).json({ error: msg }); } if (!req.file) return res.status(400).json({ error: "missing_file" }); return res.json({ ok: true, url: `${urlPrefix}/${req.file.filename}`, filename: req.file.filename, mimetype: req.file.mimetype, size: req.file.size }); }); }); }
 
 // moved to ./src/services/auth-service
 
 app.use("/auth", authRouter);
+app.use("/teacher", teacherCoreRouter);
+app.use("/teacher", teacherMaterialsRouter);
 
 app.get("/health", async (_req, res) => {
   try {
@@ -288,420 +207,9 @@ app.get("/health", async (_req, res) => {
 
 /**
  * =========================
- * Teacher: Classes
+ * Teacher: Classes / Students (moved to ./src/routes/teacher-core.routes.js)
  * =========================
  */
-app.get("/teacher/classes", requireAuth, requireRole("teacher"), async (_req, res) => {
-  try {
-    const classSet = new Set(readSchoolClassesStore());
-    const classCounts = new Map();
-    const usersCols = await detectUserColumns();
-    const hasUsersClassId = usersCols.has("class_id");
-    const hasUsersRole = usersCols.has("role");
-
-    const schoolClassesAvailable = await ensureSchoolClassesTable();
-    if (schoolClassesAvailable) {
-      try {
-        const c = await pool.query(
-          `SELECT class_id
-             FROM school_classes
-            WHERE class_id IS NOT NULL AND class_id <> ''
-            ORDER BY class_id`
-        );
-        for (const row of c.rows) classSet.add(row.class_id);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-
-    if (hasUsersClassId) {
-      try {
-        const whereParts = ["class_id IS NOT NULL", "class_id <> ''"];
-        if (hasUsersRole) whereParts.unshift("role='student'");
-        const u = await pool.query(
-          `SELECT class_id, COUNT(*)::int AS student_count
-             FROM users
-            WHERE ${whereParts.join(" AND ")}
-            GROUP BY class_id
-            ORDER BY class_id`
-        );
-        for (const row of u.rows) {
-          classSet.add(row.class_id);
-          classCounts.set(row.class_id, Number(row.student_count || 0));
-        }
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-        console.warn("[GET /teacher/classes] users fallback", e?.code || e?.message || e);
-      }
-    }
-
-    if (await tableAvailable("assignment_classes")) {
-      try {
-        const a = await pool.query(
-          `SELECT DISTINCT class_id
-             FROM assignment_classes
-            WHERE class_id IS NOT NULL AND class_id <> ''
-            ORDER BY class_id`
-        );
-        for (const row of a.rows) classSet.add(row.class_id);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-        console.warn("[GET /teacher/classes] assignment_classes fallback", e?.code || e?.message || e);
-      }
-    }
-
-    const classIds = Array.from(classSet).sort((a, b) =>
-      String(a).localeCompare(String(b), "ja", { numeric: true, sensitivity: "base" })
-    );
-
-    writeSchoolClassesStore(classIds);
-
-    return res.json(
-      classIds.map((class_id) => ({
-        class_id,
-        student_count: classCounts.get(class_id) ?? 0,
-      }))
-    );
-  } catch (e) {
-    console.error("[GET /teacher/classes]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.post("/teacher/classes", requireAuth, requireRole("teacher"), async (req, res) => {
-  const classId = String(req.body?.classId ?? "").trim();
-  if (!classId) return res.status(400).json({ error: "missing_class_id" });
-
-  try {
-    await upsertSchoolClass(classId);
-    return res.json({ ok: true, class_id: classId });
-  } catch (e) {
-    console.error("[POST /teacher/classes]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.put("/teacher/classes/:classId", requireAuth, requireRole("teacher"), async (req, res) => {
-  const currentClassId = String(req.params.classId ?? "").trim();
-  const nextClassId = String(req.body?.nextClassId ?? "").trim();
-  if (!currentClassId || !nextClassId) return res.status(400).json({ error: "missing_class_id" });
-
-  if (currentClassId === nextClassId) {
-    try {
-      await upsertSchoolClass(nextClassId);
-      return res.json({ ok: true, class_id: nextClassId });
-    } catch (e) {
-      console.error("[PUT /teacher/classes/:classId same]", e);
-      return res.status(500).json({ error: "server_error" });
-    }
-  }
-
-  const client = await pool.connect();
-  try {
-    await ensureSchoolClassesTable();
-    await client.query("BEGIN");
-
-    const exists = await client.query(`SELECT 1 FROM school_classes WHERE class_id=$1`, [nextClassId]);
-    if (exists.rowCount > 0) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({ error: "class_exists" });
-    }
-
-    await client.query(
-      `INSERT INTO school_classes (class_id, updated_at)
-       VALUES ($1, now())
-       ON CONFLICT (class_id) DO NOTHING`,
-      [currentClassId]
-    );
-    await client.query(`UPDATE school_classes SET class_id=$2, updated_at=now() WHERE class_id=$1`, [currentClassId, nextClassId]);
-    await client.query(`UPDATE users SET class_id=$2 WHERE class_id=$1`, [currentClassId, nextClassId]);
-
-    if (await tableAvailable("assignment_classes")) {
-      try {
-        await client.query(`UPDATE assignment_classes SET class_id=$2 WHERE class_id=$1`, [currentClassId, nextClassId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-    if (await tableAvailable("book_classes")) {
-      try {
-        await client.query(`UPDATE book_classes SET class_id=$2 WHERE class_id=$1`, [currentClassId, nextClassId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-    if (await tableAvailable("material_class_targets")) {
-      try {
-        await client.query(`UPDATE material_class_targets SET class_id=$2 WHERE class_id=$1`, [currentClassId, nextClassId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-
-    await client.query("COMMIT");
-    return res.json({ ok: true, class_id: nextClassId });
-  } catch (e) {
-    try { await client.query("ROLLBACK"); } catch (_e) {}
-    console.error("[PUT /teacher/classes/:classId]", e);
-    return res.status(500).json({ error: "server_error" });
-  } finally {
-    client.release();
-  }
-});
-
-app.get("/teacher/students", requireAuth, requireRole("teacher"), async (_req, res) => {
-  try {
-    const cols = await detectUserColumns();
-    const loginIdExpr = cols.has("login_id")
-      ? `COALESCE(NULLIF(login_id, ''), uid)`
-      : `uid`;
-
-    const r = await pool.query(
-      `SELECT uid,
-              ${loginIdExpr} AS login_id,
-              class_id,
-              COALESCE(NULLIF(display_name, ''), uid) AS display_name
-         FROM users
-        WHERE role='student'
-        ORDER BY class_id NULLS LAST,
-                 COALESCE(NULLIF(display_name, ''), uid),
-                 uid`
-    );
-
-    return res.json({ students: r.rows });
-  } catch (e) {
-    console.error("[GET /teacher/students]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.post("/teacher/students", requireAuth, requireRole("teacher"), async (req, res) => {
-  const loginId = String(req.body?.loginId ?? "").trim();
-  const password = String(req.body?.password ?? "");
-  const classId = String(req.body?.classId ?? "").trim();
-  const displayName = String(req.body?.displayName ?? "").trim() || loginId;
-  if (!loginId || !password || !classId) return res.status(400).json({ error: "missing_body" });
-
-  try {
-    await upsertSchoolClass(classId);
-
-    const existing = await findUserByUid(loginId);
-    if (existing && existing.role !== "student") {
-      return res.status(409).json({ error: "uid_conflict" });
-    }
-
-    const loginHit = await findAnyUserByLoginId(loginId);
-    if (loginHit && String(loginHit.uid || "") !== loginId) {
-      return res.status(409).json({ error: "login_id_conflict" });
-    }
-
-    const hash = await bcrypt.hash(password, 12);
-    await upsertStudentUser(loginId, {
-      classId,
-      displayName,
-      loginId,
-      passwordHash: hash,
-    });
-    await upsertUserAuth(loginId, loginId, hash, { role: "student", class_id: classId });
-
-    return res.json({ ok: true, uid: loginId, class_id: classId });
-  } catch (e) {
-    console.error("[POST /teacher/students]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.post("/teacher/students/bulk", requireAuth, requireRole("teacher"), async (req, res) => {
-  const classId = String(req.body?.classId ?? "").trim();
-  const password = String(req.body?.password ?? "");
-  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
-  if (!classId || !password || rows.length === 0) return res.status(400).json({ error: "missing_body" });
-
-  const created = [];
-  const skipped = [];
-  const seen = new Set();
-
-  try {
-    await upsertSchoolClass(classId);
-    const hash = await bcrypt.hash(password, 12);
-
-    for (const raw of rows) {
-      const loginId = String(raw?.loginId ?? "").trim();
-      const displayName = String(raw?.displayName ?? "").trim() || loginId;
-
-      if (!loginId) {
-        skipped.push({ loginId: "", error: "missing_login_id" });
-        continue;
-      }
-      if (seen.has(loginId)) {
-        skipped.push({ loginId, error: "duplicate_in_request" });
-        continue;
-      }
-      seen.add(loginId);
-
-      const existing = await findUserByUid(loginId);
-      if (existing) {
-        if (existing.role !== "student") {
-          skipped.push({ loginId, error: "uid_conflict" });
-        } else {
-          skipped.push({ loginId, error: "already_exists" });
-        }
-        continue;
-      }
-
-      const loginHit = await findAnyUserByLoginId(loginId);
-      if (loginHit && String(loginHit.uid || "") !== loginId) {
-        skipped.push({ loginId, error: "login_id_conflict" });
-        continue;
-      }
-
-      try {
-        await upsertStudentUser(loginId, {
-          classId,
-          displayName,
-          loginId,
-          passwordHash: hash,
-        });
-        await upsertUserAuth(loginId, loginId, hash, { role: "student", class_id: classId });
-        created.push({ uid: loginId, class_id: classId });
-      } catch (rowError) {
-        console.error("[POST /teacher/students/bulk row]", { loginId, error: rowError?.message || rowError, code: rowError?.code || null });
-        skipped.push({ loginId, error: String(rowError?.code || rowError?.message || "row_error") });
-      }
-    }
-
-    return res.json({ class_id: classId, created, skipped });
-  } catch (e) {
-    console.error("[POST /teacher/students/bulk]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.put("/teacher/students/:uid", requireAuth, requireRole("teacher"), async (req, res) => {
-  const uid = String(req.params.uid ?? "").trim();
-  const classId = String(req.body?.classId ?? "").trim();
-  const displayName = String(req.body?.displayName ?? "").trim();
-  const password = String(req.body?.password ?? "");
-  if (!uid || !classId) return res.status(400).json({ error: "missing_body" });
-
-  try {
-    await upsertSchoolClass(classId);
-    const cols = await detectUserColumns();
-    const loginIdExpr = cols.has("login_id")
-      ? `COALESCE(NULLIF(login_id, ''), uid) AS login_id`
-      : `uid AS login_id`;
-
-    const before = await pool.query(
-      `SELECT uid, ${loginIdExpr}
-         FROM users
-        WHERE uid=$1 AND role='student'`,
-      [uid]
-    );
-    if (before.rowCount === 0) return res.status(404).json({ error: "student_not_found" });
-
-    let hash = "";
-    if (password) {
-      hash = await bcrypt.hash(password, 12);
-    }
-
-    await updateStudentUser(uid, {
-      classId,
-      displayName: displayName || uid,
-      loginId: before.rows[0].login_id || uid,
-      passwordHash: hash,
-    });
-
-    if (password) {
-      await upsertUserAuth(uid, before.rows[0].login_id || uid, hash, { role: "student", class_id: classId });
-    }
-
-    return res.json({ ok: true, uid, class_id: classId });
-  } catch (e) {
-    console.error("[PUT /teacher/students/:uid]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-
-app.delete("/teacher/students/:uid", requireAuth, requireRole("teacher"), async (req, res) => {
-  const uid = String(req.params.uid ?? "").trim();
-  if (!uid) return res.status(400).json({ error: "missing_uid" });
-
-  try {
-    const existing = await findUserByUid(uid);
-    if (!existing || existing.role !== "student") return res.status(404).json({ error: "student_not_found" });
-
-    await pool.query(`DELETE FROM users WHERE uid=$1 AND role='student'`, [uid]);
-    removeMemoryAuthUserByUid(uid);
-    return res.json({ ok: true, uid });
-  } catch (e) {
-    console.error("[DELETE /teacher/students/:uid]", e);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.delete("/teacher/classes/:classId", requireAuth, requireRole("teacher"), async (req, res) => {
-  const classId = String(req.params.classId ?? "").trim();
-  if (!classId) return res.status(400).json({ error: "missing_class_id" });
-
-  removeSchoolClassFromStore(classId);
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    let studentRows = { rows: [], rowCount: 0 };
-    const usersCols = await detectUserColumns();
-    if (usersCols.has("class_id")) {
-      try {
-        const where = usersCols.has("role") ? `role='student' AND class_id=$1` : `class_id=$1`;
-        studentRows = await client.query(`SELECT uid FROM users WHERE ${where}`, [classId]);
-        await client.query(`DELETE FROM users WHERE ${where}`, [classId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-
-    if (await tableAvailable("school_classes")) {
-      try {
-        await client.query(`DELETE FROM school_classes WHERE class_id=$1`, [classId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-    if (await tableAvailable("assignment_classes")) {
-      try {
-        await client.query(`DELETE FROM assignment_classes WHERE class_id=$1`, [classId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-    if (await tableAvailable("book_classes")) {
-      try {
-        await client.query(`DELETE FROM book_classes WHERE class_id=$1`, [classId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-    if (await tableAvailable("material_class_targets")) {
-      try {
-        await client.query(`DELETE FROM material_class_targets WHERE class_id=$1`, [classId]);
-      } catch (e) {
-        if (!isSafeSchemaError(e)) throw e;
-      }
-    }
-
-    await client.query("COMMIT");
-    for (const row of studentRows.rows) removeMemoryAuthUserByUid(row.uid);
-    return res.json({ ok: true, class_id: classId, deleted_students: studentRows.rowCount || 0 });
-  } catch (e) {
-    try { await client.query("ROLLBACK"); } catch (_e) {}
-    console.error("[DELETE /teacher/classes/:classId]", e);
-    return res.status(500).json({ error: "server_error" });
-  } finally {
-    client.release();
-  }
-});
 
 app.get("/teacher/classes/summary", requireAuth, requireRole("teacher"), async (req, res) => {
   try {
@@ -4269,11 +3777,8 @@ materialUploadHandler(materialImageUpload, "/teacher/materials/upload/image", "/
 materialUploadHandler(materialVideoUpload, "/teacher/materials/upload/video", "/uploads/materials/videos");
 materialUploadHandler(materialThumbUpload, "/teacher/materials/upload/thumb", "/uploads/materials/thumbs");
 materialUploadHandler(materialAppUpload, "/teacher/materials/upload/app", "/uploads/materials/apps");
-app.get("/teacher/materials", requireAuth, requireRole("teacher"), async (_req, res) => { try { res.json(await listTeacherMaterials()); } catch (e) { if (isSafeSchemaError(e)) { console.warn("[GET /teacher/materials] material tables unavailable; empty fallback"); return res.json([]); } console.error("[GET /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } });
-app.get("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { try { await ensureMaterialsTables(); const row = await readMaterialById(pool, String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
-app.post("/teacher/materials", requireAuth, requireRole("teacher"), async (req, res) => { const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const id = newId("mat"); await client.query(`INSERT INTO materials (id, title, description, subject, unit_name, grade_level, material_type, content_url, thumbnail_url, interactive_kind, interactive_config, is_published, created_by, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished, req.user.uid]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[POST /teacher/materials]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
-app.put("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { const id = String(req.params.id); const title = String(req.body?.title ?? "").trim(); const description = String(req.body?.description ?? "").trim() || null; const subject = normalizeSubject(req.body?.subject); const unitName = String(req.body?.unit_name ?? "").trim() || null; const gradeLevel = String(req.body?.grade_level ?? "").trim() || null; const materialType = String(req.body?.material_type ?? "").trim(); const contentUrl = String(req.body?.content_url ?? "").trim() || null; const thumbnailUrl = String(req.body?.thumbnail_url ?? "").trim() || null; const interactiveKind = req.body?.interactive_kind == null ? null : String(req.body?.interactive_kind).trim() || null; const interactiveConfig = req.body?.interactive_config ?? null; const isPublished = !!req.body?.is_published; const classIds = normalizeMaterialClassIds(req.body?.class_ids); if (!title) return res.status(400).json({ error: "missing_title" }); if (!isValidMaterialType(materialType)) return res.status(400).json({ error: "invalid_material_type" }); if (!isValidInteractiveKind(interactiveKind)) return res.status(400).json({ error: "invalid_interactive_kind" }); if (materialType !== "interactive" && !contentUrl) return res.status(400).json({ error: "missing_content_url" }); const client = await pool.connect(); try { await ensureMaterialsTables(); await client.query("BEGIN"); const exists = await client.query(`SELECT id FROM materials WHERE id=$1`, [id]); if (exists.rows.length === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "not_found" }); } await client.query(`UPDATE materials SET title=$2, description=$3, subject=$4, unit_name=$5, grade_level=$6, material_type=$7, content_url=$8, thumbnail_url=$9, interactive_kind=$10, interactive_config=$11, is_published=$12, updated_at=now() WHERE id=$1`, [id, title, description, subject, unitName, gradeLevel, materialType, contentUrl, thumbnailUrl, interactiveKind, interactiveConfig, isPublished]); await client.query(`DELETE FROM material_class_targets WHERE material_id=$1`, [id]); for (const classId of classIds) await client.query(`INSERT INTO material_class_targets (material_id, class_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, classId]); await client.query("COMMIT"); res.json(await readMaterialById(client, id)); } catch (e) { await client.query("ROLLBACK"); console.error("[PUT /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } finally { client.release(); } });
-app.delete("/teacher/materials/:id", requireAuth, requireRole("teacher"), async (req, res) => { try { await ensureMaterialsTables(); const d = await pool.query(`DELETE FROM materials WHERE id=$1 RETURNING id`, [String(req.params.id)]); if (d.rows.length === 0) return res.status(404).json({ error: "not_found" }); res.json({ ok: true, id: d.rows[0].id }); } catch (e) { console.error("[DELETE /teacher/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
+// teacher materials routes moved to src/routes/teacher-materials.routes.js
+
 app.get("/student/materials", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; res.json(await listStudentMaterials(classId)); } catch (e) { if (isSafeSchemaError(e)) { console.warn("[GET /student/materials] material tables unavailable; empty fallback"); return res.json([]); } console.error("[GET /student/materials]", e); res.status(500).json({ error: "server_error" }); } });
 app.get("/student/materials/:id", requireAuth, async (req, res) => { try { const classId = req.user?.role === "student" ? req.user.classId ?? null : null; const rows = await listStudentMaterials(classId); const row = rows.find((x) => x.id === String(req.params.id)); if (!row) return res.status(404).json({ error: "not_found" }); res.json(row); } catch (e) { console.error("[GET /student/materials/:id]", e); res.status(500).json({ error: "server_error" }); } });
 
