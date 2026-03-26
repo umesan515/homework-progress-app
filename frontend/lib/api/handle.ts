@@ -5,7 +5,7 @@ export type ApiMeta = {
   url: string;
 };
 
-export async function readBodyText(res: Response) {
+export async function readBodyText(res: Response): Promise<string> {
   try {
     return await res.text();
   } catch {
@@ -22,7 +22,6 @@ export async function handle<T>(res: Response, meta: ApiMeta): Promise<T> {
   if (!res.ok) {
     const bodyText = await readBodyText(res);
     const clipped = bodyText.length > 800 ? `${bodyText.slice(0, 800)}...` : bodyText;
-
     throw new Error(
       `API ${res.status}: ${meta.method} ${meta.url}\n` +
         (clipped ? `--- response ---\n${clipped}` : ""),
@@ -30,7 +29,9 @@ export async function handle<T>(res: Response, meta: ApiMeta): Promise<T> {
   }
 
   const ct = res.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) return res.json() as Promise<T>;
+  if (ct.includes("application/json")) {
+    return res.json() as Promise<T>;
+  }
 
   const txt = await readBodyText(res);
   return txt as T;
