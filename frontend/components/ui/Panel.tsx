@@ -7,6 +7,7 @@ type PanelProps = {
 };
 
 export function Panel({ children, className = "", muted = false }: PanelProps) {
-  const base = muted ? "ui-panel-muted" : "ui-panel";
-  return <div className={[base, className].filter(Boolean).join(" ")}>{children}</div>;
+  const legacy = muted ? "soft-panel-muted" : "soft-panel";
+  const modern = muted ? "ui-panel-muted" : "ui-panel";
+  return <div className={[legacy, modern, className].filter(Boolean).join(" ")}>{children}</div>;
 }

@@ -9,10 +9,10 @@ type StatCardProps = {
 
 export function StatCard({ label, value, description, className = "" }: StatCardProps) {
   return (
-    <div className={["ui-stat-card", className].filter(Boolean).join(" ")}>
-      <div className="ui-stat-card-label">{label}</div>
-      <div className="ui-stat-card-value">{value}</div>
-      <div className="ui-stat-card-sub">{description}</div>
+    <div className={["info-card", "ui-stat-card", className].filter(Boolean).join(" ")}>
+      <div className="info-card-label ui-stat-card-label">{label}</div>
+      <div className="info-card-value ui-stat-card-value">{value}</div>
+      <div className="info-card-sub ui-stat-card-sub">{description}</div>
     </div>
   );
 }

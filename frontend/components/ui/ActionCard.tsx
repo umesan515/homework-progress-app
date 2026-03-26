@@ -21,11 +21,16 @@ export function ActionCard({
   children,
 }: ActionCardProps) {
   return (
-    <Link className={["ui-action-card", themeClassName, className].filter(Boolean).join(" ")} href={href}>
-      <div className="ui-action-card-title">{title}</div>
-      <div className="ui-action-card-desc">{description}</div>
+    <Link
+      className={["home-action-card", "ui-action-card", themeClassName, className]
+        .filter(Boolean)
+        .join(" ")}
+      href={href}
+    >
+      <div className="home-action-card-title ui-action-card-title">{title}</div>
+      <div className="home-action-card-desc ui-action-card-desc">{description}</div>
       {children}
-      <span className="ui-action-card-arrow">{cta}</span>
+      <span className="home-action-card-arrow ui-action-card-arrow">{cta}</span>
     </Link>
   );
 }

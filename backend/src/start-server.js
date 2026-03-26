@@ -41,6 +41,19 @@ const {
   removeMemoryAuthUserByUid,
 } = authService;
 
+// Accept both existing backend paths (e.g. /teacher, /auth, /student)
+// and frontend calls that include the /api prefix.
+app.use((req, _res, next) => {
+  if (req.url === '/api') {
+    req.url = '/';
+    return next();
+  }
+  if (req.url.startsWith('/api/')) {
+    req.url = req.url.slice(4) || '/';
+  }
+  return next();
+});
+
 // =========================
 // DB: lightweight migrations (runtime safety)
 // =========================

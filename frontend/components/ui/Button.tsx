@@ -7,16 +7,16 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children: ReactNode;
 };
 
-const variantClassName: Record<ButtonVariant, string> = {
-  secondary: "ui-btn-secondary",
-  danger: "ui-btn-danger",
+const variantClassName: Record<ButtonVariant, string[]> = {
+  secondary: ["subtle-button", "ui-btn-secondary"],
+  danger: ["danger-button", "ui-btn-danger"],
 };
 
 export function Button({ variant = "secondary", className = "", children, type = "button", ...props }: ButtonProps) {
   return (
     <button
       type={type}
-      className={[variantClassName[variant], className].filter(Boolean).join(" ")}
+      className={[...variantClassName[variant], className].filter(Boolean).join(" ")}
       {...props}
     >
       {children}

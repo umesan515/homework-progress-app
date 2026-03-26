@@ -845,7 +845,7 @@ export default function StudentHomePage() {
 
       <div ref={calendarRef} className="space-y-4">
         <SectionTitle title="カレンダー" desc="課題期限とテスト予定をまとめて確認します。" />
-        <WhiteCard>
+        <WhiteCard className="border-sky-200/90 bg-gradient-to-br from-sky-100 via-white to-cyan-100">
           <MonthCalendar events={calendarEvents} />
         </WhiteCard>
       </div>

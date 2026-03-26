@@ -1,8 +1,8 @@
 # homework-progress-app
 
-学習進捗管理アプリのリポジトリです。
+学習進捗管理アプリのリポジトリです．
 
-## 現在の正本構造
+## 現在のフォルダ構造
 
 - `frontend/` : Next.js フロントエンド
 - `backend/` : Node.js / Express API
@@ -31,6 +31,5 @@ node server.js
 
 ## 注意
 
-- 今後の正本は `frontend/` と `backend/` です。
-- 旧構造の `homework-progress-app/` と `homework-api/` は段階的に除去します。
-- ルートの `lib/` は使用しません。
+- 今後の正本は `frontend/` と `backend/` です．
+- ルートの `lib/` は使用しません．
