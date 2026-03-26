@@ -4,3 +4,4 @@ _git_tmp2/
 backend/uploads/
 frontend/.next/
 .env
+*.zip
