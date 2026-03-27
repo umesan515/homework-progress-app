@@ -1,6 +1,6 @@
 import type { Role } from "./token-storage";
 
-export type AppRole = Role | "admin";
+export type AppRole = Role;
 
 export type JwtUser = {
   uid: string;
@@ -9,24 +9,27 @@ export type JwtUser = {
   exp?: number;
 };
 
-const base64UrlToJson = (b64url: string) => {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
-  const str = atob(b64 + pad);
-  return JSON.parse(str);
+const base64UrlToJson = (value: string) => {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = `${normalized}${"=".repeat((4 - (normalized.length % 4)) % 4)}`;
+  return JSON.parse(atob(padded));
 };
 
 export function parseJwtUser(token: string): JwtUser | null {
   const parts = token.split(".");
   if (parts.length < 2) return null;
+
   try {
-    const p = base64UrlToJson(parts[1]);
-    const uid = String(p.uid ?? "");
-    const role = String(p.role ?? "");
-    const classId = p.classId != null ? String(p.classId) : null;
-    const exp = typeof p.exp === "number" ? p.exp : undefined;
-    if (!uid || (role !== "student" && role !== "teacher" && role !== "admin")) return null;
+    const payload = base64UrlToJson(parts[1]);
+    const uid = String(payload.uid ?? "");
+    const role = String(payload.role ?? "");
+    const classId = payload.classId != null ? String(payload.classId) : null;
+    const exp = typeof payload.exp === "number" ? payload.exp : undefined;
+
+    if (!uid) return null;
+    if (role !== "teacher" && role !== "student" && role !== "admin") return null;
     if (exp && exp * 1000 < Date.now()) return null;
+
     return { uid, role: role as AppRole, classId, exp };
   } catch {
     return null;

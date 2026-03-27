@@ -1,11 +1,14 @@
 export const LEGACY_TOKEN_KEY = "hw_token";
 export const TOKEN_KEY_TEACHER = "hw_token_teacher";
 export const TOKEN_KEY_STUDENT = "hw_token_student";
+export const TOKEN_KEY_ADMIN = "hw_token_admin";
 
-export type Role = "teacher" | "student";
+export type Role = "teacher" | "student" | "admin";
 
 export function roleKey(role: Role) {
-  return role === "teacher" ? TOKEN_KEY_TEACHER : TOKEN_KEY_STUDENT;
+  if (role === "teacher") return TOKEN_KEY_TEACHER;
+  if (role === "student") return TOKEN_KEY_STUDENT;
+  return TOKEN_KEY_ADMIN;
 }
 
 export function getStoredToken(key: string): string | null {

@@ -18,14 +18,11 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
 
   async function detectUserColumns() {
     try {
-      const r = await pool.query(
-        `SELECT column_name
-           FROM information_schema.columns
-          WHERE table_schema='public'
-            AND table_name='users'`
+      const result = await pool.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users'`
       );
-      return new Set(r.rows.map((row) => String(row.column_name)));
-    } catch (_e) {
+      return new Set(result.rows.map((row) => String(row.column_name)));
+    } catch (_error) {
       return new Set();
     }
   }
@@ -43,6 +40,7 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
   function removeMemoryAuthUserByUid(uid) {
     const normalizedUid = String(uid || "");
     if (!normalizedUid) return;
+
     for (const [loginId, user] of memoryAuthUsers.entries()) {
       if (String(user?.uid || "") === normalizedUid) {
         memoryAuthUsers.delete(loginId);
@@ -52,27 +50,31 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
 
   async function ensureAuthStorage() {
     if (authStorageReady) return;
+
     try {
       const cols = await detectUserColumns();
       authMode = cols.has("login_id") && cols.has("password_hash") ? "users" : "memory";
-    } catch (_e) {
+    } catch (_error) {
       authMode = "memory";
     }
+
     authStorageReady = true;
   }
 
   async function upsertUserAuth(uid, loginId, passwordHash, extraUser = {}) {
     await ensureAuthStorage();
+
     if (authMode === "users") {
       await pool.query(
-        `UPDATE users
-            SET login_id = COALESCE(NULLIF(login_id, ''), $2),
-                password_hash = CASE
-                  WHEN $3 <> '' THEN $3
-                  ELSE COALESCE(NULLIF(password_hash, ''), $3)
-                END
-          WHERE uid = $1`,
-        [uid, loginId, passwordHash]
+        `
+          UPDATE users
+             SET login_id = COALESCE(NULLIF($2, ''), login_id),
+                 password_hash = CASE WHEN COALESCE($3, '') <> '' THEN $3 ELSE password_hash END,
+                 role = CASE WHEN COALESCE($4, '') <> '' THEN $4 ELSE role END,
+                 class_id = COALESCE($5, class_id)
+           WHERE uid = $1
+        `,
+        [uid, loginId, passwordHash, extraUser.role ?? null, extraUser.class_id ?? null]
       );
       return;
     }
@@ -88,33 +90,32 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
 
   async function findUserByLoginId(loginId) {
     await ensureAuthStorage();
+
     if (authMode === "users") {
-      const r = await pool.query(
-        `SELECT uid, role, class_id, password_hash
-           FROM users
-          WHERE login_id=$1`,
+      const result = await pool.query(
+        `SELECT uid, role, class_id, password_hash FROM users WHERE login_id=$1`,
         [loginId]
       );
-      return r.rows[0] ?? null;
+      return result.rows[0] ?? null;
     }
+
     return memoryAuthUsers.get(String(loginId)) ?? null;
   }
 
   async function findAnyUserByLoginId(loginId) {
     const cols = await detectUserColumns();
+
     if (cols.has("login_id")) {
-      const r = await pool.query(
-        `SELECT uid, role, class_id, login_id
-           FROM users
-          WHERE login_id=$1
-          LIMIT 1`,
+      const result = await pool.query(
+        `SELECT uid, role, class_id, login_id FROM users WHERE login_id=$1 LIMIT 1`,
         [loginId]
       );
-      if (r.rows[0]) return r.rows[0];
+      if (result.rows[0]) return result.rows[0];
     }
 
     const memoryUser = memoryAuthUsers.get(String(loginId));
     if (!memoryUser) return null;
+
     return {
       uid: memoryUser.uid,
       role: memoryUser.role,
@@ -132,14 +133,8 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
     if (cols.has("login_id")) selectParts.push("login_id");
     if (cols.has("password_hash")) selectParts.push("password_hash");
 
-    const r = await pool.query(
-      `SELECT ${selectParts.join(", ")}
-         FROM users
-        WHERE uid=$1
-        LIMIT 1`,
-      [uid]
-    );
-    return r.rows[0] ?? null;
+    const result = await pool.query(`SELECT ${selectParts.join(", ")} FROM users WHERE uid=$1 LIMIT 1`, [uid]);
+    return result.rows[0] ?? null;
   }
 
   async function upsertStudentUser(uid, { classId, displayName, loginId, passwordHash }) {
@@ -209,119 +204,139 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
     }
 
     if (setParts.length === 0) return;
-    params.push(uid);
 
-    await pool.query(
-      `UPDATE users
-          SET ${setParts.join(", ")}
-        WHERE uid=$${params.length}`,
-      params
-    );
+    params.push(uid);
+    await pool.query(`UPDATE users SET ${setParts.join(", ")} WHERE uid=$${params.length}`, params);
   }
 
-  async function ensureAdminSeed(passwordHash) {
-    try {
-      await pool.query(
-        `INSERT INTO users (uid, role, class_id, display_name)
-         VALUES ('umehara', 'admin', NULL, 'Umehara')
-         ON CONFLICT (uid) DO UPDATE
-           SET role = 'admin',
-               display_name = COALESCE(NULLIF(users.display_name, ''), EXCLUDED.display_name)`
-      );
-    } catch (e) {
-      console.warn("[auth] admin seed skipped", e?.code || e?.message || e);
-    }
+  async function upsertFixedUser(uid, values) {
+    const cols = await detectUserColumns();
+    if (cols.size === 0) return;
 
-    await upsertUserAuth("umehara", "umehara", passwordHash, { role: "admin", class_id: null });
+    const insertCols = ["uid"];
+    const insertValues = [uid];
+    const updateParts = [];
+
+    const pushIfAvailable = (column, value) => {
+      if (!cols.has(column)) return;
+      insertCols.push(column);
+      insertValues.push(value);
+      updateParts.push(`${column}=EXCLUDED.${column}`);
+    };
+
+    pushIfAvailable("role", values.role ?? null);
+    pushIfAvailable("class_id", values.class_id ?? null);
+    pushIfAvailable("display_name", values.display_name ?? uid);
+    pushIfAvailable("login_id", values.login_id ?? uid);
+    pushIfAvailable("password_hash", values.password_hash ?? null);
+
+    const placeholders = insertValues.map((_, index) => `$${index + 1}`).join(", ");
+    const sql = `
+      INSERT INTO users (${insertCols.join(", ")})
+      VALUES (${placeholders})
+      ON CONFLICT (uid) DO UPDATE SET ${updateParts.join(", ")}
+    `;
+
+    await pool.query(sql, insertValues);
   }
 
   async function ensureDevAccounts() {
     if (devAccountsReady) return;
+
     await ensureAuthStorage();
+
+    const adminHash = await bcrypt.hash("yuki0515", 12);
     const teacherHash = await bcrypt.hash("teachpass", 12);
     const studentHash = await bcrypt.hash("studpass", 12);
-    const adminHash = await bcrypt.hash("yuki0515", 12);
 
     try {
-      await pool.query(`
-        INSERT INTO users (uid, role, class_id, display_name)
-        VALUES
-          ('teacher1', 'teacher', NULL, 'teacher1'),
-          ('student01', 'student', 'A', 'student01')
-        ON CONFLICT (uid) DO UPDATE
-          SET role = EXCLUDED.role,
-              class_id = CASE
-                WHEN users.class_id IS NULL OR users.class_id = '' THEN EXCLUDED.class_id
-                ELSE users.class_id
-              END,
-              display_name = CASE
-                WHEN users.display_name IS NULL OR users.display_name = '' THEN EXCLUDED.display_name
-                ELSE users.display_name
-              END
-      `);
-    } catch (e) {
-      console.warn("[auth] dev account seed skipped", e?.code || e?.message || e);
+      await upsertFixedUser("umehara", {
+        role: "admin",
+        class_id: null,
+        display_name: "umehara",
+        login_id: "umehara",
+        password_hash: adminHash,
+      });
+      await upsertFixedUser("teacher1", {
+        role: "teacher",
+        class_id: null,
+        display_name: "teacher1",
+        login_id: "teacher1",
+        password_hash: teacherHash,
+      });
+      await upsertFixedUser("student01", {
+        role: "student",
+        class_id: "A",
+        display_name: "student01",
+        login_id: "student01",
+        password_hash: studentHash,
+      });
+    } catch (error) {
+      console.warn("[auth] dev account seed skipped", error?.code || error?.message || error);
     }
 
-    await upsertUserAuth("teacher1", "teacher1", teacherHash, { role: "teacher", class_id: null });
-    await upsertUserAuth("student01", "student01", studentHash, { role: "student", class_id: "A" });
-    await ensureAdminSeed(adminHash);
+    setMemoryAuthUser({ uid: "umehara", login_id: "umehara", password_hash: adminHash, role: "admin", class_id: null });
+    setMemoryAuthUser({ uid: "teacher1", login_id: "teacher1", password_hash: teacherHash, role: "teacher", class_id: null });
+    setMemoryAuthUser({ uid: "student01", login_id: "student01", password_hash: studentHash, role: "student", class_id: "A" });
+
     devAccountsReady = true;
   }
 
   async function login(loginId, password) {
     await ensureDevAccounts();
-    const loginIdStr = String(loginId).trim();
+
+    const loginIdStr = String(loginId);
     const passwordStr = String(password);
 
+    if (loginIdStr === "umehara" && passwordStr === "yuki0515") {
+      const adminUser = { uid: "umehara", role: "admin", class_id: null };
+      const token = signToken(adminUser);
+      return { ok: true, token, user: { uid: adminUser.uid, role: adminUser.role, classId: null } };
+    }
+
     if (loginIdStr === "teacher1" && passwordStr === "teachpass") {
-      const u = { uid: "teacher1", role: "teacher", class_id: null };
-      const token = signToken(u);
-      return { ok: true, token, user: { uid: u.uid, role: u.role, classId: null } };
+      const teacherUser = { uid: "teacher1", role: "teacher", class_id: null };
+      const token = signToken(teacherUser);
+      return { ok: true, token, user: { uid: teacherUser.uid, role: teacherUser.role, classId: null } };
     }
 
     if (loginIdStr === "student01" && passwordStr === "studpass") {
-      const u = { uid: "student01", role: "student", class_id: "A" };
-      const token = signToken(u);
-      return { ok: true, token, user: { uid: u.uid, role: u.role, classId: "A" } };
+      const studentUser = { uid: "student01", role: "student", class_id: "A" };
+      const token = signToken(studentUser);
+      return { ok: true, token, user: { uid: studentUser.uid, role: studentUser.role, classId: "A" } };
     }
 
-    if (loginIdStr === "umehara" && passwordStr === "yuki0515") {
-      const u = { uid: "umehara", role: "admin", class_id: null };
-      const token = signToken(u);
-      return { ok: true, token, user: { uid: u.uid, role: u.role, classId: null } };
+    const user = await findUserByLoginId(loginIdStr);
+    if (!user) {
+      const error = new Error("invalid_credentials");
+      error.status = 401;
+      error.code = "invalid_credentials";
+      throw error;
     }
 
-    const u = await findUserByLoginId(loginIdStr);
-    if (!u) {
-      const err = new Error("invalid_credentials");
-      err.status = 401;
-      err.code = "invalid_credentials";
-      throw err;
-    }
-    if (!u.password_hash) {
-      const err = new Error("password_not_set");
-      err.status = 401;
-      err.code = "password_not_set";
-      throw err;
+    if (!user.password_hash) {
+      const error = new Error("password_not_set");
+      error.status = 401;
+      error.code = "password_not_set";
+      throw error;
     }
 
-    const ok = await bcrypt.compare(passwordStr, String(u.password_hash));
+    const ok = await bcrypt.compare(passwordStr, String(user.password_hash));
     if (!ok) {
-      const err = new Error("invalid_credentials");
-      err.status = 401;
-      err.code = "invalid_credentials";
-      throw err;
+      const error = new Error("invalid_credentials");
+      error.status = 401;
+      error.code = "invalid_credentials";
+      throw error;
     }
 
-    const token = signToken(u);
+    const token = signToken(user);
     return {
       ok: true,
       token,
       user: {
-        uid: u.uid,
-        role: u.role,
-        classId: u.class_id ?? null,
+        uid: user.uid,
+        role: user.role,
+        classId: user.class_id ?? null,
       },
     };
   }
@@ -336,6 +351,7 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
       loginId: String(loginId),
       passwordHash: hash,
     });
+
     await upsertUserAuth(uid, String(loginId), hash, {
       role: "student",
       class_id: classId ?? null,
@@ -358,6 +374,4 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
   };
 }
 
-module.exports = {
-  createAuthService,
-};
+module.exports = { createAuthService };
