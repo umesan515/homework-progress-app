@@ -1,8 +1,10 @@
 import type { Role } from "./token-storage";
 
+export type AppRole = Role | "admin";
+
 export type JwtUser = {
   uid: string;
-  role: Role;
+  role: AppRole;
   classId?: string | null;
   exp?: number;
 };
@@ -17,18 +19,15 @@ const base64UrlToJson = (b64url: string) => {
 export function parseJwtUser(token: string): JwtUser | null {
   const parts = token.split(".");
   if (parts.length < 2) return null;
-
   try {
     const p = base64UrlToJson(parts[1]);
     const uid = String(p.uid ?? "");
     const role = String(p.role ?? "");
     const classId = p.classId != null ? String(p.classId) : null;
     const exp = typeof p.exp === "number" ? p.exp : undefined;
-
-    if (!uid || (role !== "student" && role !== "teacher")) return null;
+    if (!uid || (role !== "student" && role !== "teacher" && role !== "admin")) return null;
     if (exp && exp * 1000 < Date.now()) return null;
-
-    return { uid, role: role as Role, classId, exp };
+    return { uid, role: role as AppRole, classId, exp };
   } catch {
     return null;
   }

@@ -16,8 +16,11 @@ function createAuthMiddleware({ jwt, jwtSecret }) {
   function requireRole(role) {
     return (req, res, next) => {
       if (!req.user) return res.status(401).json({ error: "missing_token" });
-      if (req.user.role !== role) return res.status(403).json({ error: "forbidden" });
-      next();
+      const actualRole = String(req.user.role || "");
+      const expectedRole = String(role || "");
+      if (actualRole === expectedRole) return next();
+      if (actualRole === "admin" && expectedRole === "teacher") return next();
+      return res.status(403).json({ error: "forbidden" });
     };
   }
 

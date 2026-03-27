@@ -21,8 +21,6 @@ function LoginPageInner() {
       ? (sp.get("role") as "teacher" | "student")
       : null;
 
-  // role 指定時は、そのロールのトークンだけを見る。
-  // これにより、同じ端末で教師ログイン中でも生徒ログイン画面を開ける。
   useEffect(() => {
     const force = sp.get("force") === "1";
     if (force) return;
@@ -30,7 +28,8 @@ function LoginPageInner() {
     const u = requestedRole ? getUserFromRoleToken(requestedRole) : getUserFromToken();
     if (!u) return;
 
-    if (u.role === "teacher") r.replace("/teacher");
+    const actualRole = String(u.role ?? "");
+    if (actualRole === "teacher" || actualRole === "admin") r.replace("/teacher");
     else r.replace("/student");
   }, [r, sp, requestedRole]);
 
@@ -39,15 +38,17 @@ function LoginPageInner() {
     setBusy(true);
 
     try {
-      const res = await apiPost<{ ok: boolean; token: string; user: any }>("/auth/login", {
+      const res = await apiPost<{ ok: boolean; token: string; user: { role?: string } }>("/auth/login", {
         loginId,
         password,
       });
-      const role = res.user?.role === "teacher" ? "teacher" : "student";
 
-      setTokenForRole(role, res.token);
+      const actualRole = String(res.user?.role ?? "student");
+      const storageRole = actualRole === "teacher" || actualRole === "admin" ? "teacher" : "student";
 
-      if (role === "teacher") r.replace("/teacher");
+      setTokenForRole(storageRole, res.token);
+
+      if (storageRole === "teacher") r.replace("/teacher");
       else r.replace("/student");
     } catch (e: any) {
       setErr(e?.message ?? "ログイン失敗");
@@ -66,7 +67,7 @@ function LoginPageInner() {
     <main className="p-6 max-w-md mx-auto space-y-4">
       <h1 className="text-xl font-semibold">ログイン</h1>
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
+      {err && <p className="text-sm text-red-600 whitespace-pre-wrap">{err}</p>}
 
       <form className="space-y-4" onSubmit={onSubmit}>
         <div className="space-y-2">
@@ -75,7 +76,7 @@ function LoginPageInner() {
             className="w-full rounded-lg border px-3 py-2"
             value={loginId}
             onChange={(e) => setLoginId(e.target.value)}
-            placeholder="teacher1 / student01"
+            placeholder="umehara / teacher1 / student01"
             autoComplete="username"
           />
         </div>
@@ -115,7 +116,8 @@ function LoginPageInner() {
         {requestedRole && (
           <div>現在は{requestedRole === "teacher" ? "教師" : "生徒"}としてログインします。</div>
         )}
-        <div>開発用アカウント: 教師 teacher1 / teachpass, 生徒 student01 / studpass</div>
+        <div>正式運用アカウント: 管理者 umehara / yuki0515</div>
+        <div>開発用デコイ: 教師 teacher1 / teachpass, 生徒 student01 / studpass</div>
         <div>
           ※別タブでログイン画面を開く場合は <b>/login?force=1</b>
         </div>

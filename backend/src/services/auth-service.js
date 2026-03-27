@@ -219,11 +219,28 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
     );
   }
 
+  async function ensureAdminSeed(passwordHash) {
+    try {
+      await pool.query(
+        `INSERT INTO users (uid, role, class_id, display_name)
+         VALUES ('umehara', 'admin', NULL, 'Umehara')
+         ON CONFLICT (uid) DO UPDATE
+           SET role = 'admin',
+               display_name = COALESCE(NULLIF(users.display_name, ''), EXCLUDED.display_name)`
+      );
+    } catch (e) {
+      console.warn("[auth] admin seed skipped", e?.code || e?.message || e);
+    }
+
+    await upsertUserAuth("umehara", "umehara", passwordHash, { role: "admin", class_id: null });
+  }
+
   async function ensureDevAccounts() {
     if (devAccountsReady) return;
     await ensureAuthStorage();
     const teacherHash = await bcrypt.hash("teachpass", 12);
     const studentHash = await bcrypt.hash("studpass", 12);
+    const adminHash = await bcrypt.hash("yuki0515", 12);
 
     try {
       await pool.query(`
@@ -248,12 +265,13 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
 
     await upsertUserAuth("teacher1", "teacher1", teacherHash, { role: "teacher", class_id: null });
     await upsertUserAuth("student01", "student01", studentHash, { role: "student", class_id: "A" });
+    await ensureAdminSeed(adminHash);
     devAccountsReady = true;
   }
 
   async function login(loginId, password) {
     await ensureDevAccounts();
-    const loginIdStr = String(loginId);
+    const loginIdStr = String(loginId).trim();
     const passwordStr = String(password);
 
     if (loginIdStr === "teacher1" && passwordStr === "teachpass") {
@@ -266,6 +284,12 @@ function createAuthService({ pool, bcrypt, jwt, jwtSecret, jwtExpiresIn }) {
       const u = { uid: "student01", role: "student", class_id: "A" };
       const token = signToken(u);
       return { ok: true, token, user: { uid: u.uid, role: u.role, classId: "A" } };
+    }
+
+    if (loginIdStr === "umehara" && passwordStr === "yuki0515") {
+      const u = { uid: "umehara", role: "admin", class_id: null };
+      const token = signToken(u);
+      return { ok: true, token, user: { uid: u.uid, role: u.role, classId: null } };
     }
 
     const u = await findUserByLoginId(loginIdStr);
