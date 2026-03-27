@@ -3,14 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+
 import { apiGet } from "@/lib/api";
 import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
 
-function roleFromPath(pathname: string): "teacher" | "student" | null {
-  if (pathname.startsWith("/teacher")) return "teacher";
-  if (pathname.startsWith("/student")) return "student";
-  return null;
-}
+type RouteRole = "teacher" | "student" | null;
 
 type NoticeItem = {
   thread_id: string;
@@ -22,34 +19,48 @@ type NoticeItem = {
   created_at: string;
 };
 
-type NoticeResponse = { notifications: NoticeItem[] };
+type NoticeResponse = {
+  notifications: NoticeItem[];
+};
 
-function fmtDateTime(d: string | null | undefined) {
+function roleFromPath(pathname: string): RouteRole {
+  if (pathname.startsWith("/teacher")) return "teacher";
+  if (pathname.startsWith("/student")) return "student";
+  return null;
+}
+
+function fmtDateTime(d: string | null | undefined): string {
   if (!d) return "";
   const t = new Date(d);
   if (Number.isNaN(t.getTime())) return "";
   return t.toLocaleString("ja-JP");
 }
 
-function safeId(v: any): string {
+function safeId(v: unknown): string {
   const s = String(v ?? "").trim();
   if (!s || s === "undefined" || s === "null") return "";
   return s;
 }
 
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-full border border-white/30 bg-white/20 px-3 py-1 text-sm font-medium text-white">
+      {children}
+    </span>
+  );
+}
+
 export default function AppHeader() {
   const router = useRouter();
   const pathname = usePathname() || "/";
-
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
-
   const [notices, setNotices] = useState<NoticeItem[]>([]);
   const [noticeErr, setNoticeErr] = useState<string | null>(null);
-
   const role = useMemo(() => roleFromPath(pathname), [pathname]);
+  const fetchingRef = useRef(false);
 
   useEffect(() => {
     const u = getUserFromToken();
@@ -57,7 +68,6 @@ export default function AppHeader() {
     setReady(true);
   }, []);
 
-  // メニュー/お知らせを開いたときの ESC / 外側クリック対応
   useEffect(() => {
     if (!menuOpen && !noticeOpen) return;
 
@@ -96,7 +106,6 @@ export default function AppHeader() {
     router.replace("/login?force=1");
   };
 
-  // ログイン画面などではヘッダーを出さない
   if (pathname.startsWith("/login")) return null;
 
   const menuItems: Array<{ href: string; label: string; desc?: string }> =
@@ -109,6 +118,7 @@ export default function AppHeader() {
           { href: "/teacher/questions", label: "質問（Q&A）" },
           { href: "/teacher/materials", label: "教材置き場" },
           { href: "/teacher/books", label: "問題集管理" },
+          { href: "/teacher/students", label: "生徒管理" },
         ]
       : role === "student"
         ? [
@@ -119,15 +129,10 @@ export default function AppHeader() {
           ]
         : [{ href: "/", label: "ホーム" }];
 
-  // --------
-  // お知らせ（質問メッセージ）
-  // --------
   const seenKey = useMemo(() => {
     if (!user?.uid || !role) return "";
     return `notice_seen_${role}_${user.uid}`;
   }, [role, user?.uid]);
-
-  const fetchingRef = useRef(false);
 
   const fetchNotices = async () => {
     if (!role || !user) return;
@@ -140,17 +145,15 @@ export default function AppHeader() {
       const path = role === "teacher" ? `/teacher/notifications${q}` : `/student/notifications${q}`;
       const r = await apiGet<NoticeResponse>(path);
       const list = Array.isArray(r?.notifications) ? r.notifications : [];
-      // thread_id が無い行は除外
       const cleaned = list
         .map((x) => ({ ...x, thread_id: safeId((x as any).thread_id ?? (x as any).threadId ?? (x as any).id) }))
         .filter((x) => x.thread_id);
       setNotices(cleaned);
     } catch (e: any) {
       const msg = String(e?.message ?? "お知らせの取得に失敗しました。");
-      // 401はログアウト
       if (msg.includes("401")) {
         logout(role);
-        router.replace("/login");
+        router.replace("/login?force=1");
         return;
       }
       setNoticeErr(msg);
@@ -159,170 +162,183 @@ export default function AppHeader() {
     }
   };
 
-  // 定期ポーリング（軽量）
   useEffect(() => {
     if (!role || !user) return;
     fetchNotices();
     const id = window.setInterval(fetchNotices, 15000);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role, user?.uid]);
 
-
   const noticeCount = notices.length;
-
   const threadHref = (threadId: string) => {
     const tid = encodeURIComponent(threadId);
     return role === "teacher" ? `/teacher/questions/${tid}` : `/student/questions/${tid}`;
   };
 
-
-
   const markSeen = (iso: string) => {
     if (!seenKey) return;
     try {
-      // 既読時刻は「クリック時点」を採用（まとめて既読）
       localStorage.setItem(seenKey, iso || new Date().toISOString());
     } catch {
       // ignore
     }
   };
-  return (
-    <header className="fixed top-0 inset-x-0 z-50 bg-emerald-600 text-white border-b border-emerald-700">
-      <div className="w-full px-4 py-2 flex items-center justify-between gap-3">
-        <div className="min-w-0 flex items-center gap-3">
-          <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen((v) => !v);
-                setNoticeOpen(false);
-              }}
-              className="rounded-lg border px-3 py-2 text-sm bg-white/10 border-white/20 text-white hover:bg-white/20 transition active:scale-[0.99]"
-              aria-label="メニュー"
-              aria-expanded={menuOpen}
-            >
-              ☰
-            </button>
 
-            {menuOpen && (
-              <div className="absolute left-0 mt-2 w-72 rounded-2xl border border-slate-200 bg-white shadow-lg overflow-hidden text-gray-900">
-                <div className="px-3 py-2 text-xs text-gray-500 border-b">メニュー</div>
-                <div className="py-1">
-                  {menuItems.map((it) => (
+  return (
+    <header className="sticky top-0 z-40 border-b border-emerald-700 bg-emerald-600 text-white shadow-sm">
+      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 md:px-6">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+              setNoticeOpen(false);
+            }}
+            className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white transition hover:bg-white/20 active:scale-[0.99]"
+            aria-label="メニュー"
+            aria-expanded={menuOpen}
+          >
+            ☰
+          </button>
+          {menuOpen ? (
+            <div
+              className="absolute left-0 top-12 w-72 rounded-2xl border border-emerald-100 bg-white p-3 text-slate-800 shadow-xl"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="px-2 pb-2 text-sm font-semibold text-slate-700">メニュー</div>
+              <div className="space-y-1">
+                {menuItems.map((it) => (
+                  <Link
+                    key={it.href}
+                    href={it.href}
+                    className="block rounded-xl px-3 py-2 hover:bg-emerald-50"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    <div className="text-sm font-medium">{it.label}</div>
+                    {it.desc ? <div className="mt-1 text-xs text-slate-500">{it.desc}</div> : null}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <Link href={homeHref} className="min-w-0 text-base font-semibold md:text-lg">
+          学習進捗管理アプリ
+        </Link>
+
+        <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
+          {ready && user ? (
+            <>
+              {user.role === "admin" ? (
+                <>
+                  <Badge>管理者</Badge>
+                  <Badge>教師</Badge>
+                </>
+              ) : user.role === "teacher" ? (
+                <Badge>教師</Badge>
+              ) : (
+                <Badge>生徒</Badge>
+              )}
+              <Badge>ID: {user.uid}</Badge>
+              {user.role === "student" ? <Badge>クラス: {classText}</Badge> : null}
+            </>
+          ) : null}
+        </div>
+
+        <div className="relative ml-auto">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setNoticeOpen((v) => !v);
+              setMenuOpen(false);
+            }}
+            className="relative rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white transition hover:bg-white/20 active:scale-[0.99]"
+            aria-label="お知らせ"
+            aria-expanded={noticeOpen}
+          >
+            🔔
+            {noticeCount > 0 ? (
+              <span className="absolute -right-2 -top-2 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                {noticeCount > 99 ? "99+" : noticeCount}
+              </span>
+            ) : null}
+          </button>
+          {noticeOpen ? (
+            <div
+              className="absolute right-0 top-12 w-80 rounded-2xl border border-emerald-100 bg-white p-3 text-slate-800 shadow-xl"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">お知らせ</div>
+                <button type="button" onClick={fetchNotices} className="text-xs text-emerald-700 hover:underline">
+                  更新
+                </button>
+              </div>
+              {noticeErr ? <div className="mb-2 rounded-lg bg-rose-50 p-2 text-xs text-rose-700">{noticeErr}</div> : null}
+              {notices.length === 0 ? (
+                <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">新しいお知らせはありません。</div>
+              ) : (
+                <div className="space-y-2">
+                  {notices.map((n) => (
                     <Link
-                      key={it.href}
-                      href={it.href}
-                      className="block px-4 py-3 text-sm hover:bg-slate-50 transition"
-                      onClick={() => setMenuOpen(false)}
+                      key={n.thread_id}
+                      href={threadHref(n.thread_id)}
+                      className="block rounded-xl border border-slate-100 p-3 hover:bg-emerald-50"
+                      onClick={() => {
+                        markSeen(new Date().toISOString());
+                        setNoticeOpen(false);
+                      }}
                     >
-                      <div className="font-medium horizontal-label">{it.label}</div>
-                      {it.desc && <div className="text-xs text-gray-500">{it.desc}</div>}
+                      <div className="text-xs text-slate-500">
+                        {fmtDateTime(n.created_at)} {n.class_id ? `クラス:${n.class_id}` : ""}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-700">
+                        {role === "teacher" ? `（${n.student_uid ?? "生徒"}）から質問が届きました` : "先生から返信が届きました"}
+                      </div>
+                      <div className="mt-1 text-sm font-medium text-slate-900">{n.title ?? "(無題)"}</div>
+                      <div className="mt-1 line-clamp-2 text-xs text-slate-500">{(n.body ?? "").trim() || (n.image_path ? "（画像）" : "")}</div>
                     </Link>
                   ))}
                 </div>
-              </div>
-            )}
-          </div>
-
-          <Link href={homeHref} className="font-semibold rounded-lg px-3 py-1.5 hover:bg-white/10 transition horizontal-label" title="ホーム">
-            学習進捗管理アプリ
-          </Link>
-          {ready && user && (
-            <div className="hidden sm:flex items-center gap-2 text-xs text-white/95">
-              <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">{user.role === "teacher" ? "教師" : "生徒"}</span>
-              <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">ID: {user.uid}</span>
-              {user.role === "student" && <span className="rounded-full border border-white/25 bg-white/10 px-2.5 py-1 text-white">クラス: {classText}</span>}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => {
-                setNoticeOpen((v) => !v);
-                setMenuOpen(false);
-              }}
-              className="rounded-lg border px-3 py-2 text-sm bg-white/10 border-white/20 text-white hover:bg-white/20 transition active:scale-[0.99] relative"
-              aria-label="お知らせ"
-              aria-expanded={noticeOpen}
-            >
-              🔔
-              {noticeCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[11px] flex items-center justify-center">
-                  {noticeCount > 99 ? "99+" : noticeCount}
-                </span>
               )}
-            </button>
-
-            {noticeOpen && (
-              <div className="absolute right-0 mt-2 w-96 rounded-xl border bg-white shadow-lg overflow-hidden text-gray-900">
-                <div className="px-3 py-2 text-xs text-gray-500 border-b flex items-center justify-between">
-                  <span>お知らせ</span>
-                  <button
-                    className="text-xs text-emerald-700 hover:underline"
-                    onClick={() => fetchNotices()}
-                    type="button"
-                  >
-                    更新
-                  </button>
-                </div>
-
-                {noticeErr && <div className="p-3 text-sm text-red-700 bg-red-50 border-b">{noticeErr}</div>}
-
-                <div className="max-h-[420px] overflow-auto">
-                  {notices.length === 0 ? (
-                    <div className="p-3 text-sm text-gray-700">新しいお知らせはありません。</div>
-                  ) : (
-                    <div className="divide-y">
-                      {notices.map((n, i) => (
-                        <Link
-                          key={`${n.thread_id}_${n.created_at}_${i}`}
-                          href={threadHref(n.thread_id)}
-                          className="block p-3 hover:bg-gray-50"
-                          onClick={() => { markSeen(new Date().toISOString()); setNoticeOpen(false); }}
-                        >
-                          
-                          <div className="text-xs text-gray-500 flex items-center justify-between gap-2">
-                            <span className="truncate">{fmtDateTime(n.created_at)}</span>
-                            <span className="shrink-0">{n.class_id ? `クラス:${n.class_id}` : ""}</span>
-                          </div>
-
-                          {role === "teacher" ? (
-                            <div className="text-sm text-gray-900 mt-1">
-                              （{n.student_uid ?? "生徒"}）から質問が届きました
-                            </div>
-                          ) : (
-                            <div className="text-sm text-gray-900 mt-1">先生から返信が届きました</div>
-                          )}
-
-                          <div className="text-[11px] text-gray-600 mt-1 truncate">{n.title ?? "(無題)"}</div>
-                          <div className="text-sm text-gray-800 mt-1 line-clamp-2">{(n.body ?? "").trim() || (n.image_path ? "（画像）" : "")}</div>
-
-                        </Link>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {ready && user ? (
-            <button
-              type="button"
-              onClick={onLogout}
-              className="rounded-lg border px-3 py-2 text-sm bg-white/10 border-white/20 text-white hover:bg-white/20 transition active:scale-[0.99]"
-            >
-              ログアウト
-            </button>
-          ) : (
-            <div className="text-xs text-gray-500">...</div>
-          )}
+            </div>
+          ) : null}
         </div>
+
+        {ready && user ? (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white transition hover:bg-white/20"
+          >
+            ログアウト
+          </button>
+        ) : (
+          <div className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white/80">...</div>
+        )}
       </div>
+
+      {ready && user ? (
+        <div className="border-t border-white/10 px-4 py-2 md:hidden">
+          <div className="flex flex-wrap gap-2">
+            {user.role === "admin" ? (
+              <>
+                <Badge>管理者</Badge>
+                <Badge>教師</Badge>
+              </>
+            ) : user.role === "teacher" ? (
+              <Badge>教師</Badge>
+            ) : (
+              <Badge>生徒</Badge>
+            )}
+            <Badge>ID: {user.uid}</Badge>
+            {user.role === "student" ? <Badge>クラス: {classText}</Badge> : null}
+          </div>
+        </div>
+      ) : null}
     </header>
   );
 }
