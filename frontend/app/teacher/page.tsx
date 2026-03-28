@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiDelete, apiGet, apiPost } from "@/lib/api";
-import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
+import { getPrimaryUserFromStoredTokens, getUserFromToken, isAdminLikeUser, logout, type JwtUser } from "@/lib/auth";
 import { MonthCalendar, type CalendarEvent, toYMDLocal } from "@/lib/month-calendar";
 
 type AssignmentRow = {
@@ -124,6 +124,7 @@ export default function TeacherHomePage() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
+  const [rawUser, setRawUser] = useState<JwtUser | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
@@ -138,12 +139,17 @@ export default function TeacherHomePage() {
 
   useEffect(() => {
     setUser(getUserFromToken() as JwtUser | null);
+    setRawUser(getPrimaryUserFromStoredTokens() as JwtUser | null);
     setLocalTests(readLocalEvents());
     setReady(true);
   }, []);
 
   const isTeacherLike = user?.role === "teacher" || user?.role === "admin";
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminLikeUser(rawUser) || isAdminLikeUser(user);
+  const pageTitle = isAdmin ? "管理者ホーム" : "教師ホーム";
+  const pageSubtitle = isAdmin
+    ? "管理者アカウントでログイン中です。生徒管理・クラス管理などの管理者機能を優先表示しています。"
+    : "配布、確認、分析、教材管理までを一画面で見渡せるよう整理した教師用ホームです。";
 
   useEffect(() => {
     if (!ready) return;
@@ -303,12 +309,19 @@ export default function TeacherHomePage() {
   return (
     <div className="space-y-8 p-4 md:p-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight text-gray-900">教師ホーム</h1>
-        <p className="mt-3 text-sm text-gray-600">配布、確認、分析、教材管理までを一画面で見渡せるよう整理した教師用ホームです。</p>
-        <p className="mt-2 text-sm text-gray-600">
-          ログイン中: {user.uid}
-          {isAdmin ? <span className="ml-2 text-emerald-700">（管理者モード有効）</span> : null}
-        </p>
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">{pageTitle}</h1>
+        <p className="mt-3 text-sm text-gray-600">{pageSubtitle}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+          <span>ログイン中: {user.uid}</span>
+          {isAdmin ? (
+            <>
+              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">管理者</span>
+              <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">教師</span>
+            </>
+          ) : (
+            <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">教師</span>
+          )}
+        </div>
       </div>
 
       {err ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 whitespace-pre-wrap">{err}</div> : null}

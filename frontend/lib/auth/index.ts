@@ -144,6 +144,25 @@ export const getUserFromToken = (): JwtUser | null => {
   return user;
 };
 
+
+export const getPrimaryUserFromStoredTokens = (): JwtUser | null => {
+  if (typeof window === "undefined") return null;
+
+  const candidates = [TOKEN_KEY_ADMIN, TOKEN_KEY_TEACHER, TOKEN_KEY_STUDENT, LEGACY_TOKEN_KEY];
+  for (const key of candidates) {
+    const token = getStoredToken(key);
+    if (!token) continue;
+    const user = parseJwtUser(token);
+    if (user) return user;
+  }
+  return null;
+};
+
+export const isAdminLikeUser = (user: JwtUser | null | undefined) => {
+  if (!user) return false;
+  return user.role === "admin" || user.uid === "umehara";
+};
+
 export type { Role } from "./token-storage";
 export type { JwtUser } from "./jwt";
 export { detectRoleFromPath } from "./role-detect";

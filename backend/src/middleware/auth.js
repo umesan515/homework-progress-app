@@ -1,14 +1,14 @@
 function createAuthMiddleware({ jwt, jwtSecret }) {
   function requireAuth(req, res, next) {
-    const header = req.headers.authorization || "";
-    const match = header.match(/^Bearer\s+(.+)$/i);
-    if (!match) return res.status(401).json({ error: "missing_token" });
+    const h = req.headers.authorization || "";
+    const m = h.match(/^Bearer\s+(.+)$/i);
+    if (!m) return res.status(401).json({ error: "missing_token" });
 
     try {
-      const payload = jwt.verify(match[1], jwtSecret);
+      const payload = jwt.verify(m[1], jwtSecret);
       req.user = payload;
       next();
-    } catch (_error) {
+    } catch (_e) {
       return res.status(401).json({ error: "invalid_token" });
     }
   }
@@ -17,16 +17,11 @@ function createAuthMiddleware({ jwt, jwtSecret }) {
     return (req, res, next) => {
       if (!req.user) return res.status(401).json({ error: "missing_token" });
 
-      if (req.user.role === role) {
-        next();
-        return;
-      }
+      const actualRole = String(req.user.role || "");
+      const expectedRole = String(role || "");
 
-      if (role === "teacher" && req.user.role === "admin") {
-        next();
-        return;
-      }
-
+      if (actualRole === expectedRole) return next();
+      if (actualRole === "admin" && expectedRole === "teacher") return next();
       return res.status(403).json({ error: "forbidden" });
     };
   }

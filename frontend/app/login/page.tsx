@@ -4,7 +4,7 @@ import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { apiPost } from "@/lib/api";
-import { getUserFromRoleToken, getUserFromToken, setTokenForRole } from "@/lib/auth";
+import { getUserFromRoleToken, getUserFromToken, logout, setTokenForRole } from "@/lib/auth";
 
 type LoginResponse = {
   ok: boolean;
@@ -34,8 +34,8 @@ function LoginPageInner() {
     const user = requestedRole ? getUserFromRoleToken(requestedRole) : getUserFromToken();
     if (!user) return;
 
-    if (user.role === "admin") {
-      router.replace("/admin");
+    if (user.role === "admin" || user.uid === "umehara") {
+      window.location.replace("/teacher?admin=1");
       return;
     }
     if (user.role === "teacher") {
@@ -53,25 +53,34 @@ function LoginPageInner() {
     setErrorMessage(null);
 
     try {
+      logout();
+
       const response = await apiPost<LoginResponse>("/auth/login", {
         loginId: loginId.trim(),
         password,
       });
 
+      const uid = String(response.user?.uid ?? loginId.trim());
       const actualRole = String(response.user?.role ?? "student");
+
       if (actualRole === "admin") {
         setTokenForRole("admin", response.token);
-        router.replace("/admin");
+        window.location.replace("/teacher?admin=1");
+        return;
+      }
+      if (uid === "umehara") {
+        setTokenForRole("teacher", response.token);
+        window.location.replace("/teacher?admin=1");
         return;
       }
       if (actualRole === "teacher") {
         setTokenForRole("teacher", response.token);
-        router.replace("/teacher");
+        window.location.replace("/teacher");
         return;
       }
 
       setTokenForRole("student", response.token);
-      router.replace("/student");
+      window.location.replace("/student");
     } catch (error: any) {
       const raw = String(error?.message ?? "ログインに失敗しました。");
       if (raw.includes("invalid_credentials")) {
