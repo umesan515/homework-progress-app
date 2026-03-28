@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { apiGet } from "@/lib/api";
-import { getUserFromToken, logout, type JwtUser } from "@/lib/auth";
+import { getPrimaryUserFromStoredTokens, getUserFromToken, isAdminLikeUser, logout, type JwtUser } from "@/lib/auth";
 
 type RouteRole = "teacher" | "student" | null;
 
@@ -55,6 +55,7 @@ export default function AppHeader() {
   const pathname = usePathname() || "/";
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<JwtUser | null>(null);
+  const [rawUser, setRawUser] = useState<JwtUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
   const [notices, setNotices] = useState<NoticeItem[]>([]);
@@ -64,7 +65,9 @@ export default function AppHeader() {
 
   useEffect(() => {
     const u = getUserFromToken();
+    const raw = getPrimaryUserFromStoredTokens();
     setUser(u);
+    setRawUser(raw);
     setReady(true);
   }, []);
 
@@ -100,6 +103,8 @@ export default function AppHeader() {
     if (!user?.classId) return "—";
     return user.classId;
   }, [user?.classId]);
+
+  const isAdminHeader = isAdminLikeUser(rawUser) || isAdminLikeUser(user);
 
   const onLogout = () => {
     logout(role ?? undefined);
@@ -231,7 +236,7 @@ export default function AppHeader() {
         <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
           {ready && user ? (
             <>
-              {user.role === "admin" ? (
+              {isAdminHeader ? (
                 <>
                   <Badge>管理者</Badge>
                   <Badge>教師</Badge>
@@ -324,7 +329,7 @@ export default function AppHeader() {
       {ready && user ? (
         <div className="border-t border-white/10 px-4 py-2 md:hidden">
           <div className="flex flex-wrap gap-2">
-            {user.role === "admin" ? (
+            {isAdminHeader ? (
               <>
                 <Badge>管理者</Badge>
                 <Badge>教師</Badge>
